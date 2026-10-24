@@ -1,0 +1,45 @@
+{
+  "name": "@thinkr/issuer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Thinkr issuer: it signs the blind vouchers of credit for payments on Robinhood Chain.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thinkrsh/thinkr-issuer.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "tsx watch --env-file=env/local.env src/index.ts",
+    "build": "tsc --project tsconfig.build.json",
+    "start": "node --disable-warning=ExperimentalWarning --env-file=env/local.env dist/index.js",
+    "treasury": "tsx src/treasury.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.5",
+    "hono": "4.13.13",
+    "viem": "2.57.3",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/blindrsa-ts": "0.4.6",
+    "@eslint/js": "10.0.1",
+    "@types/node": "22.20.5",
+    "eslint": "10.13.0",
+    "globals": "17.13.0",
+    "prettier": "3.9.10",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.0",
+    "vitest": "5.0.5"
+  }
+}
