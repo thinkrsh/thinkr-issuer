@@ -5,7 +5,7 @@
 // order they were paid, so that what left the treasury counts against the oldest lot first.
 import { CREDIT } from '../config/credit.js';
 import { TOKEN_TREASURY } from '../config/token.js';
-import { unitsPerUsd, type TokenMarket } from '../credit/token-price.js';
+import { poolTokenReserve, unitsPerUsd, type TokenMarket } from '../credit/token-price.js';
 
 const BPS = 10_000n;
 const MICROS = BigInt(CREDIT.microsPerUsd);
@@ -142,9 +142,12 @@ function planLot(
   };
 }
 
-/** The most THKR one sale may take: a sale moves the price of the curve about twice its share. */
+/**
+ * The most THKR one sale may take: a sale moves the price of the pool about twice its share of the
+ * THKR on the side of the pool at its price.
+ */
 function saleSize(market: TokenMarket): bigint {
-  const size = (market.tokenReserve * BigInt(TOKEN_TREASURY.maxSellImpactBps)) / (2n * BPS);
+  const size = (poolTokenReserve(market) * BigInt(TOKEN_TREASURY.maxSellImpactBps)) / (2n * BPS);
   return size > 0n ? size : 1n;
 }
 

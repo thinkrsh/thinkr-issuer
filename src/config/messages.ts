@@ -33,8 +33,6 @@ export const MESSAGES = {
   tokenPaymentOff: 'Payment in THKR opens soon.',
   tokenPriceUnknown:
     'The price of THKR is not known right now. Pay with USDG, or try again in a few minutes.',
-  tokenGraduated:
-    'THKR left its bonding curve for a pool of Uniswap v4, where the issuer does not read its price yet.',
   tokenAmountMissing: 'A top-up paid in THKR names the amount of its quote.',
   quoteUnknown: 'No quote of this top-up asked for this amount.',
   quoteExpired: 'The payment came after its quote ended, so its price no longer holds.',

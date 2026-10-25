@@ -1,9 +1,18 @@
-import { decodeFunctionData, encodeFunctionResult, parseAbi, type Hex } from 'viem';
+import {
+  decodeFunctionData,
+  encodeFunctionResult,
+  hexToBigInt,
+  parseAbi,
+  toHex,
+  type Hex,
+} from 'viem';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { TOKEN_PRICE } from '../src/config/token.js';
 import type { PriceSample } from '../src/credit/ledger.js';
 import {
+  poolStateSlot,
+  poolTokenReserve,
   quoteUnitsPerUsd,
   readTokenMarket,
   sampleTokenPrice,
@@ -15,44 +24,62 @@ import { openLedger } from '../src/node/ledger.js';
 import { rpcCallOf } from './helpers.js';
 
 const WHOLE = 10n ** 18n;
+const Q96 = 2n ** 96n;
 const NOW = Date.UTC(2026, 9, 23, 12, 0, 0);
 const MINUTE = TOKEN_PRICE.sampleEveryMs;
 
 /**
- * 1 ETH against 100,000,000 THKR on the curve, and a root of 2^82 in the pool, which is 2^-28 USDG
- * units for a wei: ETH at $3,725.29 and THKR at $0.0000372529, so a dollar buys 26,843.5456 THKR.
+ * 100,000,000 THKR for 1 ETH in its pool (a root of 10,000 times 2^96), with 100,000,000 THKR on
+ * its side at that price, and a root of 2^82 in the pool of USDG, which is 2^-28 USDG units for a
+ * wei: ETH at $3,725.29 and THKR at $0.0000372529, so a dollar buys 26,843.5456 THKR.
  */
 const MARKET: TokenMarket = {
-  quoteReserve: WHOLE,
-  tokenReserve: 100_000_000n * WHOLE,
-  sqrtPriceX96: 2n ** 82n,
+  tokenSqrtPriceX96: 10_000n * Q96,
+  tokenLiquidity: 10_000n * WHOLE,
+  ethSqrtPriceX96: 2n ** 82n,
+};
+
+/** Read on the chain in block 97,624,716 (25 Oct 2026): the first word of the state of the pool. */
+const LIVE_STATE_WORD: Hex = '0x00000000000000000002b51d0000000000001bd5a1cbdaf84c8c12c7bbe50286';
+const LIVE_MARKET: TokenMarket = {
+  tokenSqrtPriceX96: 564_550_731_446_712_225_279_943_108_788_870n,
+  tokenLiquidity: 29_277_002_188_455_996_774_276n,
+  ethSqrtPriceX96: 3_821_218_636_840_874_025_156_608n,
 };
 
 const ABI = parseAbi([
-  'function getReserves() view returns (uint256 quoteReserve, uint256 tokenReserve)',
-  'function graduated() view returns (bool)',
+  'function extsload(bytes32 slot) view returns (bytes32)',
   'function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)',
 ]);
 
-/** An RPC that answers the views of the curve and the pool from `market`. */
-function chainOf(market: TokenMarket, graduated = false): ReturnType<typeof vi.fn<typeof fetch>> {
+const STATE_SLOT = poolStateSlot(TOKEN_PRICE.pool);
+const LIQUIDITY_SLOT = toHex(hexToBigInt(STATE_SLOT) + 3n, { size: 32 });
+
+/**
+ * An RPC that answers the PoolManager and the pool of USDG from `market`. The first word of the
+ * state carries a tick and a fee above the root, as on the chain.
+ */
+function chainOf(market: TokenMarket): ReturnType<typeof vi.fn<typeof fetch>> {
   return vi.fn<typeof fetch>((_input, init) => {
     const [view] = rpcCallOf(init).params as [{ data: Hex }];
     const call = decodeFunctionData({ abi: ABI, data: view.data });
-    const result =
-      call.functionName === 'getReserves'
-        ? encodeFunctionResult({
-            abi: ABI,
-            functionName: 'getReserves',
-            result: [market.quoteReserve, market.tokenReserve],
-          })
-        : call.functionName === 'graduated'
-          ? encodeFunctionResult({ abi: ABI, functionName: 'graduated', result: graduated })
-          : encodeFunctionResult({
-              abi: ABI,
-              functionName: 'slot0',
-              result: [market.sqrtPriceX96, 0, 0, 1, 1, 0, true],
-            });
+    let result: Hex;
+    if (call.functionName === 'extsload') {
+      const above = (177_437n << 160n) | (1n << 210n);
+      const word =
+        call.args[0] === STATE_SLOT ? above | market.tokenSqrtPriceX96 : market.tokenLiquidity;
+      result = encodeFunctionResult({
+        abi: ABI,
+        functionName: 'extsload',
+        result: toHex(word, { size: 32 }),
+      });
+    } else {
+      result = encodeFunctionResult({
+        abi: ABI,
+        functionName: 'slot0',
+        result: [market.ethSqrtPriceX96, 0, 0, 1, 1, 0, true],
+      });
+    }
     return Promise.resolve(Response.json({ jsonrpc: '2.0', id: 1, result }));
   });
 }
@@ -70,17 +97,27 @@ afterEach(() => {
 });
 
 describe('unitsPerUsd', () => {
-  it('turns the curve and the pool into THKR for a dollar, in whole numbers', () => {
+  it('turns the two pools into THKR for a dollar, in whole numbers', () => {
     expect(unitsPerUsd(MARKET)).toBe(26_843_545_600_000_000_000_000n);
   });
 
-  it('reads the market of 23 Oct 2026 as about 35,673 THKR for a dollar', () => {
-    const market: TokenMarket = {
-      quoteReserve: 4_440_614_454_172_172_783n,
-      tokenReserve: 378_326_021_621_075_099_415_119_579n,
-      sqrtPriceX96: 3_871_853_931_091_509_165_345_239n,
-    };
-    expect(unitsPerUsd(market) / WHOLE).toBe(35_673n);
+  it('reads the market of 25 Oct 2026 as about 21,827 THKR for a dollar', () => {
+    expect(unitsPerUsd(LIVE_MARKET) / WHOLE).toBe(21_827n);
+  });
+});
+
+describe('the pool of THKR', () => {
+  it('finds the state of the pool where the chain keeps it', () => {
+    expect(STATE_SLOT).toBe('0x4d5ad4e28fc372c75ac1e8712eee837bb058d2c66d261b50391e282d5116b190');
+  });
+
+  it('takes the root of the price from the lowest 160 bits of the first word', () => {
+    expect(hexToBigInt(LIVE_STATE_WORD) & ((1n << 160n) - 1n)).toBe(LIVE_MARKET.tokenSqrtPriceX96);
+  });
+
+  it('holds about 208.6M THKR on its side at the price of 25 Oct 2026', () => {
+    expect(poolTokenReserve(LIVE_MARKET) / WHOLE).toBe(208_617_144n);
+    expect(poolTokenReserve(MARKET)).toBe(100_000_000n * WHOLE);
   });
 });
 
@@ -116,21 +153,27 @@ describe('quoteUnitsPerUsd', () => {
 });
 
 describe('readTokenMarket', () => {
-  it('reads the reserves of the curve and the root of the price of the pool', async () => {
+  it('reads two words of the pool of THKR and the root of the price of the pool of USDG', async () => {
     const fetchMock = chainOf(MARKET);
     await expect(readTokenMarket({ fetch: fetchMock, rpcUrl: null })).resolves.toEqual(MARKET);
-    const targets = fetchMock.mock.calls.map(([, init]) => {
-      const [view] = rpcCallOf(init).params as [{ to: string }];
-      return view.to;
+    const calls = fetchMock.mock.calls.map(([, init]) => {
+      const [view] = rpcCallOf(init).params as [{ to: string; data: Hex }];
+      const call = decodeFunctionData({ abi: ABI, data: view.data });
+      return `${view.to} ${call.functionName === 'extsload' ? call.args[0] : 'slot0'}`;
     });
-    expect(targets.sort()).toEqual(
-      [TOKEN_PRICE.curve, TOKEN_PRICE.curve, TOKEN_PRICE.ethUsdPool].sort(),
+    expect(calls.sort()).toEqual(
+      [
+        `${TOKEN_PRICE.poolManager} ${STATE_SLOT}`,
+        `${TOKEN_PRICE.poolManager} ${LIQUIDITY_SLOT}`,
+        `${TOKEN_PRICE.ethUsdPool} slot0`,
+      ].sort(),
     );
   });
 
-  it('stops once THKR graduates from its curve', async () => {
-    await expect(readTokenMarket({ fetch: chainOf(MARKET, true), rpcUrl: null })).rejects.toThrow(
-      /Uniswap v4/,
+  it('refuses a pool with no price or no liquidity', async () => {
+    const empty = { ...MARKET, tokenLiquidity: 0n };
+    await expect(readTokenMarket({ fetch: chainOf(empty), rpcUrl: null })).rejects.toThrow(
+      /cannot read/,
     );
   });
 });

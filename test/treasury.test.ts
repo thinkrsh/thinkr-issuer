@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { TOKEN_TREASURY } from '../src/config/token.js';
-import type { TokenMarket } from '../src/credit/token-price.js';
+import { poolTokenReserve, type TokenMarket } from '../src/credit/token-price.js';
 import { planTreasury, type Lot, type Move } from '../src/treasury/plan.js';
 
 const WHOLE = 10n ** 18n;
@@ -9,9 +9,9 @@ const NOW = Date.UTC(2026, 10, 1, 12, 0, 0);
 const DAY_MS = 24 * 60 * 60 * 1_000;
 /** 26,843.5456 THKR for a dollar, as in token-price.test.ts. */
 const MARKET: TokenMarket = {
-  quoteReserve: WHOLE,
-  tokenReserve: 100_000_000n * WHOLE,
-  sqrtPriceX96: 2n ** 82n,
+  tokenSqrtPriceX96: 10_000n * 2n ** 96n,
+  tokenLiquidity: 10_000n * WHOLE,
+  ethSqrtPriceX96: 2n ** 82n,
 };
 const PER_USD = 26_843_545_600_000_000_000_000n;
 /** GPT-OSS 120B on 23 Oct 2026: its price is 73% of its cost. */
@@ -94,7 +94,7 @@ describe('planTreasury', () => {
   it('splits a large sale so that each moves the price about 1%', () => {
     const big = lot(10_000_000n * WHOLE, 2, 200);
     const [result] = plan([big]).lots;
-    const perSale = (MARKET.tokenReserve * BigInt(TOKEN_TREASURY.maxSellImpactBps)) / 20_000n;
+    const perSale = (poolTokenReserve(MARKET) * BigInt(TOKEN_TREASURY.maxSellImpactBps)) / 20_000n;
     expect(result?.status).toBe('sell');
     expect(result?.sales).toBe(Number(((result?.toSell ?? 0n) + perSale - 1n) / perSale));
     expect(result?.sales).toBeGreaterThan(1);

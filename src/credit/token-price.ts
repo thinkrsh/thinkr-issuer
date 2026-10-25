@@ -1,8 +1,18 @@
 // The price of THKR in dollars, for payment in THKR (config/token.ts). Each minute the issuer reads
-// the bonding curve of THKR, where it trades against ETH, and the pool of ETH against USDG, and keeps
-// what a dollar buys in the ledger. A quote takes the lower of the newest price and the mean of the
-// last hour, so that a price pushed up for a moment buys no extra credit.
-import { decodeFunctionResult, encodeFunctionData, parseAbi, type Hex } from 'viem';
+// the pool of Uniswap v4 where THKR trades against ETH since it left its bonding curve, and the pool
+// of ETH against USDG, and keeps what a dollar buys in the ledger. A quote takes the lower of the
+// newest price and the mean of the last hour, so that a price pushed up for a moment buys no extra
+// credit.
+import {
+  decodeFunctionResult,
+  encodeFunctionData,
+  encodePacked,
+  hexToBigInt,
+  keccak256,
+  parseAbi,
+  toHex,
+  type Hex,
+} from 'viem';
 
 import { MESSAGES } from '../config/messages.js';
 import { PAYMENTS } from '../config/payments.js';
@@ -12,26 +22,32 @@ import type { LogLine } from '../lib/log.js';
 import { ethCall, type ChainDeps } from './chain.js';
 import type { Ledger, PriceSample } from './ledger.js';
 
-const CURVE_ABI = parseAbi([
-  'function getReserves() view returns (uint256 quoteReserve, uint256 tokenReserve)',
-  'function graduated() view returns (bool)',
-]);
+const POOL_MANAGER_ABI = parseAbi(['function extsload(bytes32 slot) view returns (bytes32)']);
 
 const POOL_ABI = parseAbi([
   'function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint8 feeProtocol, bool unlocked)',
 ]);
 
-/** 2^192: the square of the Q64.96 format in which Uniswap v3 keeps the root of a price. */
-const Q192 = 1n << 192n;
+/**
+ * Where Uniswap v4 keeps a pool in its PoolManager (StateLibrary of v4-core): the state of a pool
+ * starts at keccak256(pool id, 6), its first word holds the root of the price in its lowest 160
+ * bits, and its liquidity sits three words after it.
+ */
+const POOLS_SLOT = 6n;
+const LIQUIDITY_OFFSET = 3n;
+const SQRT_PRICE_MASK = (1n << 160n) - 1n;
 
-/** The market of THKR: the reserves of its curve, and the root of the price of ETH in USDG. */
+/** 2^96: the Q64.96 format in which Uniswap keeps the root of a price. */
+const Q96 = 1n << 96n;
+
+/** The market of THKR: the root of its price in its pool, its liquidity, and the price of ETH. */
 export interface TokenMarket {
-  /** The ETH of the curve, real and virtual, in wei. */
-  readonly quoteReserve: bigint;
-  /** The THKR of the curve, in its smallest unit. */
-  readonly tokenReserve: bigint;
-  /** USDG for one WETH in the pool, as Uniswap v3 keeps it: the root of the price, times 2^96. */
-  readonly sqrtPriceX96: bigint;
+  /** THKR for one ETH in its pool of Uniswap v4: the root of the price, times 2^96. */
+  readonly tokenSqrtPriceX96: bigint;
+  /** The liquidity of that pool at its price. */
+  readonly tokenLiquidity: bigint;
+  /** USDG for one WETH in the pool of Uniswap v3: the root of the price, times 2^96. */
+  readonly ethSqrtPriceX96: bigint;
 }
 
 export interface SamplerDeps extends ChainDeps {
@@ -41,75 +57,73 @@ export interface SamplerDeps extends ChainDeps {
 }
 
 /**
- * THKR, in its smallest unit, that one dollar buys: the curve gives ETH for each THKR, and the pool
- * gives USDG for each ETH. Every step stays in whole numbers, so nothing rounds before the end.
+ * THKR, in its smallest unit, that one dollar buys: its pool gives THKR for each ETH, and the pool
+ * of USDG gives USDG for each ETH. Both keep the root of the price times 2^96, so the factors of
+ * 2^96 cancel, and every step stays in whole numbers until the end.
  */
 export function unitsPerUsd(market: TokenMarket): bigint {
   const usdUnits = 10n ** BigInt(PAYMENTS.token.decimals);
   return (
-    (usdUnits * market.tokenReserve * Q192) /
-    (market.quoteReserve * market.sqrtPriceX96 * market.sqrtPriceX96)
+    (usdUnits * market.tokenSqrtPriceX96 * market.tokenSqrtPriceX96) /
+    (market.ethSqrtPriceX96 * market.ethSqrtPriceX96)
   );
 }
 
-/** Reads the market of THKR. Throws once THKR graduates, since its price is then in another pool. */
+/** The THKR on the side of its pool at the price of now, in its smallest unit. */
+export function poolTokenReserve(market: TokenMarket): bigint {
+  return (market.tokenLiquidity * market.tokenSqrtPriceX96) / Q96;
+}
+
+/** The first word of the state of a pool in the PoolManager of Uniswap v4. */
+export function poolStateSlot(poolId: Hex): Hex {
+  return keccak256(encodePacked(['bytes32', 'uint256'], [poolId, POOLS_SLOT]));
+}
+
+/** Reads the market of THKR: two words of its pool, and the price of the pool of USDG. */
 export async function readTokenMarket(deps: ChainDeps): Promise<TokenMarket> {
-  const [reserves, graduated, slot0] = await Promise.all([
-    ethCall(
-      deps,
-      TOKEN_PRICE.curve,
-      encodeFunctionData({ abi: CURVE_ABI, functionName: 'getReserves' }),
-    ),
-    ethCall(
-      deps,
-      TOKEN_PRICE.curve,
-      encodeFunctionData({ abi: CURVE_ABI, functionName: 'graduated' }),
-    ),
+  const stateSlot = poolStateSlot(TOKEN_PRICE.pool);
+  const liquiditySlot = toHex(hexToBigInt(stateSlot) + LIQUIDITY_OFFSET, { size: 32 });
+  const [state, liquidity, slot0] = await Promise.all([
+    ethCall(deps, TOKEN_PRICE.poolManager, extsload(stateSlot)),
+    ethCall(deps, TOKEN_PRICE.poolManager, extsload(liquiditySlot)),
     ethCall(
       deps,
       TOKEN_PRICE.ethUsdPool,
       encodeFunctionData({ abi: POOL_ABI, functionName: 'slot0' }),
     ),
   ]);
-  const market = decodeMarket(reserves, graduated, slot0);
-  if (market.quoteReserve === 0n || market.tokenReserve === 0n || market.sqrtPriceX96 === 0n) {
+  const market = decodeMarket(state, liquidity, slot0);
+  if (
+    market.tokenSqrtPriceX96 === 0n ||
+    market.tokenLiquidity === 0n ||
+    market.ethSqrtPriceX96 === 0n
+  ) {
     throw new IssuerError('upstream_error', MESSAGES.chainUnreadable);
   }
   return market;
 }
 
-function decodeMarket(reserves: Hex, graduated: Hex, slot0: Hex): TokenMarket {
-  let market: TokenMarket & { readonly graduated: boolean };
+function extsload(slot: Hex): Hex {
+  return encodeFunctionData({ abi: POOL_MANAGER_ABI, functionName: 'extsload', args: [slot] });
+}
+
+function decodeMarket(state: Hex, liquidity: Hex, slot0: Hex): TokenMarket {
   try {
-    const [quoteReserve, tokenReserve] = decodeFunctionResult({
-      abi: CURVE_ABI,
-      functionName: 'getReserves',
-      data: reserves,
-    });
-    const [sqrtPriceX96] = decodeFunctionResult({
+    const word = (data: Hex): bigint =>
+      hexToBigInt(decodeFunctionResult({ abi: POOL_MANAGER_ABI, functionName: 'extsload', data }));
+    const [ethSqrtPriceX96] = decodeFunctionResult({
       abi: POOL_ABI,
       functionName: 'slot0',
       data: slot0,
     });
-    market = {
-      quoteReserve,
-      tokenReserve,
-      sqrtPriceX96,
-      graduated: decodeFunctionResult({
-        abi: CURVE_ABI,
-        functionName: 'graduated',
-        data: graduated,
-      }),
+    return {
+      tokenSqrtPriceX96: word(state) & SQRT_PRICE_MASK,
+      tokenLiquidity: word(liquidity),
+      ethSqrtPriceX96,
     };
   } catch {
     throw new IssuerError('upstream_error', MESSAGES.chainUnreadable);
   }
-  if (market.graduated) throw new IssuerError('upstream_error', MESSAGES.tokenGraduated);
-  return {
-    quoteReserve: market.quoteReserve,
-    tokenReserve: market.tokenReserve,
-    sqrtPriceX96: market.sqrtPriceX96,
-  };
 }
 
 /**

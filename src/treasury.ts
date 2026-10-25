@@ -1,7 +1,7 @@
 // npm run treasury: what the owner sells and burns from the treasury of THKR, lot by lot, by the rule
 // of config/token.ts. It reads the payments from the issuer, the THKR that left the treasury from the
-// chain, and the price of the curve, then prints each lot and the next step. It sends nothing: the
-// owner sells on the curve and burns from the wallet. Run it with --payments <url> to read another
+// chain, and the price of its pool of Uniswap v4, then prints each lot and the next step. It sends
+// nothing: the owner sells in the pool and burns from the wallet. Run it with --payments <url> to read another
 // issuer, such as the one on the laptop.
 import { formatUnits } from 'viem';
 import { z } from 'zod';
@@ -104,7 +104,7 @@ function report(payments: Payments, plan: TreasuryPlan, now: number): void {
     print(`Next step: none yet. Lot ${lot} waits, and the lots after it wait for it.`);
   } else if (next.status === 'sell') {
     print(
-      `Next step, lot ${lot}: sell ${tokens(next.toSell, decimals)} ${symbol} on the curve in ` +
+      `Next step, lot ${lot}: sell ${tokens(next.toSell, decimals)} ${symbol} in its pool of Uniswap v4 in ` +
         `${String(next.sales)} sales, then send ${tokens(next.toBurn, decimals)} ${symbol} to ` +
         `${TOKEN_TREASURY.burnAddress}.`,
     );

@@ -32,15 +32,23 @@ export const TOKEN_PAYMENT: TokenPaymentConfig = {
 };
 
 /**
- * Where the price of THKR in dollars comes from, read on the chain on 23 Oct 2026. THKR trades on
- * its bonding curve of Pons V2 against ETH (2.56 ETH of real reserve, of the 4.2 ETH at which it
- * graduates to a pool of Uniswap v4), and ETH trades against USDG in the pool below, the deepest on
- * the chain (DexScreener: $18.9M of liquidity and $202M of volume in a day). A quote takes the lower
- * of the newest price and the mean of the last hour, so a price pushed up for a moment buys nothing.
+ * Where the price of THKR in dollars comes from, read on the chain on 25 Oct 2026. THKR traded on
+ * its bonding curve of Pons V2 against ETH until it graduated on 24 Oct 2026 at 15:33 UTC (block
+ * 96,869,722; graduated() answers true). Since the next block it trades against ETH in a pool of
+ * Uniswap v4: ETH as currency0, THKR as currency1, tick spacing 200, an LP fee of 0, and the hook
+ * 0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044, which takes 2.6% of each swap. On 25 Oct 2026 the
+ * pool held about 208.6M THKR and 4.1 ETH at its price, and 1M THKR was worth about $45.80. ETH
+ * trades against USDG in the pool below, the deepest on the chain (DexScreener on 23 Oct 2026:
+ * $18.9M of liquidity and $202M of volume in a day). A quote takes the lower of the newest price
+ * and the mean of the last hour, so a price pushed up for a moment buys nothing.
  */
 export const TOKEN_PRICE = {
-  /** The bonding curve of THKR: getReserves() gives its quote (ETH) and token reserves. */
+  /** The bonding curve where THKR traded until it graduated; the hold leaves it out. */
   curve: '0xe2e04e8e2a25ed8cccd631ea79fc63792fb136c8',
+  /** The PoolManager of Uniswap v4 on the chain, which holds the pool of THKR (read by extsload). */
+  poolManager: '0x8366a39cc670b4001a1121b8f6a443a643e40951',
+  /** The id of the pool of THKR against ETH, from its Initialize event in block 96,869,723. */
+  pool: '0x497578a8e01aab3ebe0c7467aca26a635f93228f91d0b819768f113657e191ad',
   /** Uniswap v3 WETH/USDG at 0.01%, with WETH as token0 and USDG as token1. */
   ethUsdPool: '0x52e65B17fB6E5BA00Ed806f37Afcd2DaA50271Ca',
   /** How often the issuer reads the price and keeps it. */
@@ -71,9 +79,13 @@ export const TOKEN_TREASURY = {
   costShareBps: 13_637,
   /** The address that burns a token, where the deployer burned THKR on 22 Oct 2026. */
   burnAddress: '0x000000000000000000000000000000000000dEaD',
-  /** What a sale on the curve pays: 1% fee and 1.6% creator tax (feeBps, creatorTaxBps). */
+  /**
+   * What a sale in the pool of THKR pays: its hook takes 2.6% of each swap, as the curve took a 1%
+   * fee and a 1.6% creator tax. On two buys of 25 Oct 2026 the hook kept 107,247 of 4,124,898 THKR
+   * and 27,529 of 1,058,823 THKR, 2.6% each.
+   */
   sellFeeBps: 260,
-  /** The most that one sale may move the price of the curve, so that THKR is sold bit by bit. */
+  /** The most that one sale may move the price of the pool, so that THKR is sold bit by bit. */
   maxSellImpactBps: 100,
   /** The block of the launch of THKR (22 Oct 2026), from which moves out of the treasury count. */
   sinceBlock: 95_269_648,
