@@ -3,6 +3,7 @@
 import { z } from 'zod';
 
 import { MAX_TOP_UP_VOUCHERS, VOUCHER_SIGNATURE } from './config/credit.js';
+import { HOLD } from './config/hold.js';
 import { MESSAGES } from './config/messages.js';
 
 export const ERROR_CODES = [
@@ -14,6 +15,12 @@ export const ERROR_CODES = [
   'payment_pending',
   'payment_invalid',
   'payment_used',
+  'claim_invalid',
+  'claim_too_large',
+  'claims_open',
+  'ticket_unknown',
+  'ticket_used',
+  'ticket_expired',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -151,4 +158,160 @@ export interface TokenPaymentsResponse {
     /** The time of its block, in milliseconds since 1970. */
     paidAt: number;
   }[];
+}
+
+/** Why a wallet earns now, or why it does not. */
+export type HoldReason = 'earning' | 'below_minimum' | 'paused' | 'excluded' | 'contract';
+
+/**
+ * GET /api/issuer/hold/wallets/<address>: the hold of one wallet, as the count of the issuer sees
+ * it. Public, like the chain it comes from.
+ */
+export interface HoldWalletResponse {
+  /** In lower case. */
+  address: string;
+  /** THKR now, in the smallest unit, as a decimal string. */
+  balance: string;
+  /** The lowest balance of the last 24 hours, which the count takes, in the same unit. */
+  countedBalance: string;
+  reason: HoldReason;
+  /** Holder vouchers a day at the counted balance, before the pool shares them. */
+  fullRatePerDay: number;
+  /** The part of what the wallets earned in the last hour that the pool paid: 1 when it paid all. */
+  poolShare: number;
+  /** Holder vouchers earned in all, with their parts. */
+  earned: number;
+  /** Whole holder vouchers that claims took. */
+  claimed: number;
+  /** Whole holder vouchers that a claim can take now. */
+  claimable: number;
+  /** In milliseconds since 1970, or null. */
+  lastClaimAt: number | null;
+  /** When the wallet stops earning unless it claims, or null before it first earned. */
+  pausesAt: number | null;
+  /** The top of the last hour counted, or null before the first. */
+  countedUntil: number | null;
+  /** What one holder voucher is worth in dollars of credit. */
+  voucherUsd: number;
+}
+
+const walletSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
+const ticketHashSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+/**
+ * POST /api/issuer/hold/quote: the text that a wallet signs to claim `vouchers` of its holder
+ * vouchers into the ticket whose hash the chat app made.
+ */
+export const holdQuoteRequestSchema = z.strictObject({
+  wallet: walletSchema,
+  vouchers: z.number().int().min(1).max(HOLD.maxVouchersPerClaim),
+  /** The SHA-256 of the secret of the ticket, in hex. Only the chat app holds the secret. */
+  ticket: ticketHashSchema,
+});
+
+export type HoldQuoteRequest = z.infer<typeof holdQuoteRequestSchema>;
+
+export interface HoldQuoteResponse {
+  /** The text that the wallet signs. Signing costs no gas. */
+  message: string;
+  /** Whole holder vouchers that a claim can take now. */
+  claimable: number;
+}
+
+/** POST /api/issuer/hold/claims: the signed claim, which the issuer answers with its ticket. */
+export const holdClaimRequestSchema = holdQuoteRequestSchema.extend({
+  signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
+});
+
+export type HoldClaimRequest = z.infer<typeof holdClaimRequestSchema>;
+
+export interface HoldClaimResponse {
+  /** The hash of the ticket, as the claim named it. */
+  ticket: string;
+  vouchers: number;
+  /** When the ticket gives its vouchers back to the wallet, unless the chat app fetched them. */
+  expiresAt: number;
+}
+
+/**
+ * POST /api/issuer/hold/transfer-claims: a claim by transfer, for a wallet in an app that signs no
+ * message (25 Oct 2026). The issuer answers with an amount of THKR that names the claim; once the
+ * wallet sends exactly that amount to the burn address, the count fills the ticket with every
+ * holder voucher that the wallet can claim then.
+ */
+export const holdTransferClaimRequestSchema = z.strictObject({
+  wallet: walletSchema,
+  /** The SHA-256 of the secret of the ticket, in hex. Only the chat app holds the secret. */
+  ticket: ticketHashSchema,
+});
+
+export type HoldTransferClaimRequest = z.infer<typeof holdTransferClaimRequestSchema>;
+
+/**
+ * Where a claim by transfer stands: it waits for the transfer, its ticket holds the holder
+ * vouchers, the transfer came when the wallet had none to claim, or its time ended.
+ */
+export type HoldTransferClaimState = 'waiting' | 'claimed' | 'empty' | 'expired';
+
+/** A claim by transfer, and GET /api/issuer/hold/transfer-claims/<ticket hash>. */
+export interface HoldTransferClaimResponse {
+  /** The hash of the ticket, as the claim named it. */
+  ticket: string;
+  state: HoldTransferClaimState;
+  /** The THKR to send, in the smallest unit, as a decimal string. */
+  amount: string;
+  /** Where to send it: the burn address. */
+  to: string;
+  /** The token to send, THKR, on the chain of `chainId`. */
+  token: string;
+  chainId: number;
+  /** When a transfer stops naming this claim, in milliseconds since 1970. */
+  expiresAt: number;
+  /** The holder vouchers that the transfer claimed into the ticket, or null before it came. */
+  vouchers: number | null;
+}
+
+/** GET /api/issuer/hold/tickets/<hash>: what a ticket gives, and the key to blind its vouchers. */
+export interface HoldTicketResponse {
+  vouchers: number;
+  /** The key of the month of the claim. */
+  keyId: string;
+  /** The RSA public key, SPKI DER in base64url. */
+  publicKey: string;
+  /** What one holder voucher is worth in dollars of credit. */
+  voucherUsd: number;
+  expiresAt: number;
+  /** True once the chat app fetched the vouchers of the ticket. */
+  fetched: boolean;
+}
+
+/**
+ * POST /api/issuer/hold/tickets/redeem: the secret of a ticket and one blinded voucher for each of
+ * its vouchers, which the issuer answers with blind signatures, as for a top-up.
+ */
+export const holdRedeemRequestSchema = z.strictObject({
+  ticket: base64UrlOf(HOLD.ticketBytes),
+  keyId: keyIdSchema,
+  blinded: z.array(base64UrlOf(MODULUS_BYTES)).min(1).max(HOLD.maxVouchersPerClaim),
+});
+
+export type HoldRedeemRequest = z.infer<typeof holdRedeemRequestSchema>;
+
+export interface HoldRedeemResponse {
+  /** One blind signature for each blinded voucher, in the same order, in base64url. */
+  blindSignatures: string[];
+}
+
+/** GET /api/issuer/hold/totals: the hold as a whole, with no wallet (decision 191). */
+export interface HoldTotalsResponse {
+  /** Holder vouchers that every wallet earned, with their parts. */
+  earned: number;
+  /** Holder vouchers that the chat app fetched, and those in tickets that wait for it. */
+  issued: number;
+  pending: number;
+  /** The wallets that earned in the last hour counted. */
+  earning: number;
+  dailyPoolUsd: number;
+  voucherUsd: number;
+  countedUntil: number | null;
 }

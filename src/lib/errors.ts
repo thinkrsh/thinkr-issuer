@@ -12,6 +12,12 @@ export const ERROR_STATUS = {
   payment_pending: 409,
   payment_invalid: 400,
   payment_used: 409,
+  claim_invalid: 400,
+  claim_too_large: 409,
+  claims_open: 409,
+  ticket_unknown: 404,
+  ticket_used: 409,
+  ticket_expired: 410,
 } as const satisfies Record<ErrorCode, ContentfulStatusCode>;
 
 export class IssuerError extends Error {

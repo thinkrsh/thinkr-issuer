@@ -7,7 +7,10 @@ import { createApp } from '../src/app.js';
 import { VOUCHER_SIGNATURE } from '../src/config/credit.js';
 import type { TokenPaymentConfig } from '../src/config/token.js';
 import type { Ledger } from '../src/credit/ledger.js';
+import type { HoldStore } from '../src/hold/store.js';
+import { openHoldStore } from '../src/node/hold-store.js';
 import { openLedger } from '../src/node/ledger.js';
+import type { HolderKeys } from '../src/credit/holder-keys.js';
 import { voucherKeyFromPem } from '../src/node/voucher-key.js';
 
 export const TEST_CLIENT = 'client-1';
@@ -20,6 +23,21 @@ export const TEST_VOUCHER_KEY = voucherKeyFromPem(
   }) as string,
 );
 
+function testKey(): ReturnType<typeof voucherKeyFromPem> {
+  return voucherKeyFromPem(
+    generateKeyPairSync('rsa', { modulusLength: VOUCHER_SIGNATURE.modulusBits }).privateKey.export({
+      type: 'pkcs8',
+      format: 'pem',
+    }) as string,
+  );
+}
+
+/** The holder keys of the tests: October and November of 2026. */
+export const TEST_HOLDER_KEYS: HolderKeys = new Map([
+  ['2026-10', testKey()],
+  ['2026-11', testKey()],
+]);
+
 export type FetchMock = ReturnType<typeof vi.fn<typeof fetch>>;
 
 export interface TestApp {
@@ -28,6 +46,8 @@ export interface TestApp {
   readonly logs: string[];
   /** The ledger of this app, in memory. */
   readonly ledger: Ledger;
+  /** The store of the hold of this app, in memory. */
+  readonly holdStore: HoldStore;
 }
 
 export interface TestAppOptions {
@@ -36,6 +56,8 @@ export interface TestAppOptions {
   readonly chainRpcUrl?: string;
   /** Payment in THKR, with a wallet of the test. */
   readonly tokenPayment?: TokenPaymentConfig;
+  /** The store of the hold; unset, a new one in memory. */
+  readonly holdStore?: HoldStore;
 }
 
 export function createTestApp(
@@ -44,16 +66,20 @@ export function createTestApp(
 ): TestApp {
   const logs: string[] = [];
   const ledger = openLedger(':memory:');
+  const holdStore = options.holdStore ?? openHoldStore(':memory:');
   const app = createApp({
     env: {
       clientAddressHeader: null,
       voucherKeyFile: 'unused-in-tests.pem',
+      holderKeysDir: 'unused-in-tests',
       databaseFile: ':memory:',
       testnetPayers: [],
       chainRpcUrl: options.chainRpcUrl ?? null,
     },
     ledger,
     voucherKey: TEST_VOUCHER_KEY,
+    holdStore,
+    holderKeys: TEST_HOLDER_KEYS,
     fetch: fetchMock,
     now: options.now ?? (() => Date.now()),
     clientKey: (c) => c.req.header('x-test-visitor') ?? TEST_CLIENT,
@@ -62,7 +88,7 @@ export function createTestApp(
     },
     ...(options.tokenPayment === undefined ? {} : { tokenPayment: options.tokenPayment }),
   });
-  return { app, fetchMock, logs, ledger };
+  return { app, fetchMock, logs, ledger, holdStore };
 }
 
 /** The method and the parameters of a call to the RPC of the chain. */

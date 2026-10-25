@@ -15,6 +15,7 @@ export const MESSAGES = {
   internal: 'The issuer failed. Try again.',
   notFound: 'Not found.',
   notJson: 'The request body must be JSON.',
+  tooLarge: 'The request is too large.',
   invalidRequest: 'The request is not valid.',
   rateLimited: 'Too many requests. Wait a minute and try again.',
   noClientAddress: 'The request reached the issuer without the address of its client.',
@@ -37,6 +38,29 @@ export const MESSAGES = {
   tokenAmountMissing: 'A top-up paid in THKR names the amount of its quote.',
   quoteUnknown: 'No quote of this top-up asked for this amount.',
   quoteExpired: 'The payment came after its quote ended, so its price no longer holds.',
+  walletInvalid: 'A wallet is 0x and 40 hexadecimal characters.',
+  ticketHashInvalid: 'A ticket is named by 64 hexadecimal characters.',
+  claimSignatureInvalid: 'The signature does not come from the wallet that claims.',
+  claimTooLarge: (claimable: number): string =>
+    `This wallet can claim ${String(claimable)} holder ${claimable === 1 ? 'voucher' : 'vouchers'} now.`,
+  ticketTaken: 'Another claim already took this ticket. Start the claim again from the chat.',
+  ticketUnknown: 'This ticket does not exist, or it ended. Start the claim again from the chat.',
+  ticketUsed: 'This ticket already gave its vouchers to another request.',
+  ticketExpired: 'This ticket ended, and its vouchers went back to the wallet. Claim again.',
+  ticketCount: (vouchers: number): string =>
+    `This ticket gives ${String(vouchers)} ${vouchers === 1 ? 'voucher' : 'vouchers'}, no more and no fewer.`,
+  holderKeyMissing: 'No key signs holder vouchers this month.',
+  claimsOpen:
+    'This wallet has too many claims by transfer open. Send the amount of one of them, or wait an hour.',
+  transferClaimUnknown: 'This claim by transfer does not exist. Start the claim again.',
+  /** The text that a wallet signs to claim its holder vouchers. It costs no gas. */
+  holdClaimMessage: (vouchers: number, wallet: string, ticket: string): string =>
+    [
+      `Thinkr holder claim: ${String(vouchers)} holder ${vouchers === 1 ? 'voucher' : 'vouchers'}.`,
+      `Wallet: ${wallet}`,
+      `Ticket: ${ticket}`,
+      'Signing is free. It claims the holder vouchers that this wallet earned.',
+    ].join('\n'),
   /** The text the wallet signs. It ties the payment to the blinded vouchers and costs nothing. */
   topUpMessage: (vouchers: number, requestHash: string): string =>
     topUpText(

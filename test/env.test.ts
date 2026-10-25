@@ -4,6 +4,7 @@ import { readEnv } from '../src/config/env.js';
 
 const LAPTOP = {
   VOUCHER_KEY_FILE: '../../secret/voucher-dev.pem',
+  HOLDER_KEYS_DIR: '../../secret/holder-keys-dev',
   DATABASE_FILE: '.data/ledger.db',
 };
 
@@ -12,6 +13,7 @@ describe('readEnv', () => {
     expect(readEnv(LAPTOP)).toEqual({
       clientAddressHeader: null,
       voucherKeyFile: '../../secret/voucher-dev.pem',
+      holderKeysDir: '../../secret/holder-keys-dev',
       databaseFile: '.data/ledger.db',
       testnetPayers: [],
       chainRpcUrl: null,
@@ -40,7 +42,7 @@ describe('readEnv', () => {
   });
 
   it('fails loudly and names every missing variable', () => {
-    expect(() => readEnv({})).toThrow(/VOUCHER_KEY_FILE, DATABASE_FILE/);
+    expect(() => readEnv({})).toThrow(/VOUCHER_KEY_FILE, HOLDER_KEYS_DIR, DATABASE_FILE/);
   });
 
   it('fails when a variable is blank', () => {

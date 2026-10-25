@@ -9,6 +9,11 @@ const envSchema = z.object({
   CLIENT_ADDRESS_HEADER: z.string().trim().min(1).optional(),
   /** The private key that signs vouchers (RSA, PEM). On the server it never leaves the server. */
   VOUCHER_KEY_FILE: z.string().trim().min(1),
+  /**
+   * The folder of the keys that sign holder vouchers, one RSA private key (PEM) for each month,
+   * named after it: 2026-10.pem (decision 189). `npm run holder-keys` makes them.
+   */
+  HOLDER_KEYS_DIR: z.string().trim().min(1),
   /** The SQLite file of the ledger of the issuer: payments claimed, quotes, and prices of THKR. */
   DATABASE_FILE: z.string().trim().min(1),
   /**
@@ -30,6 +35,7 @@ const envSchema = z.object({
 export interface Env {
   readonly clientAddressHeader: string | null;
   readonly voucherKeyFile: string;
+  readonly holderKeysDir: string;
   readonly databaseFile: string;
   /** In lower case. */
   readonly testnetPayers: readonly string[];
@@ -45,13 +51,14 @@ export function readEnv(source: EnvSource): Env {
     const names = [...new Set(result.error.issues.map((issue) => issue.path.join('.')))];
     throw new Error(
       `Missing or invalid environment variable: ${names.join(', ')}. ` +
-        'Settings go in apps/issuer/env/ (on the laptop, the voucher key and the ledger are named ' +
-        'in env/local.env) (see apps/issuer/.env.example).',
+        'Settings go in apps/issuer/env/ (on the laptop, the voucher key, the holder keys, and ' +
+        'the ledger are named in env/local.env) (see apps/issuer/.env.example).',
     );
   }
   return {
     clientAddressHeader: result.data.CLIENT_ADDRESS_HEADER ?? null,
     voucherKeyFile: result.data.VOUCHER_KEY_FILE,
+    holderKeysDir: result.data.HOLDER_KEYS_DIR,
     databaseFile: result.data.DATABASE_FILE,
     testnetPayers: (result.data.TESTNET_PAYERS ?? '')
       .split(',')

@@ -17,6 +17,7 @@
     "build": "tsc --project tsconfig.build.json",
     "start": "node --disable-warning=ExperimentalWarning --env-file=env/local.env dist/index.js",
     "treasury": "tsx src/treasury.ts",
+    "holder-keys": "tsx src/holder-keys.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",

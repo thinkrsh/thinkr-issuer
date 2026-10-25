@@ -11,14 +11,19 @@ import { readEnv } from './config/env.js';
 import { MESSAGES } from './config/messages.js';
 import { SERVER } from './config/server.js';
 import { startTokenPriceSampler } from './credit/token-price.js';
+import { startHoldSync } from './hold/sync.js';
 import { IssuerError } from './lib/errors.js';
 import { writeLogLine } from './lib/log.js';
+import { openHoldStore } from './node/hold-store.js';
+import { holderKeysFromDir } from './node/holder-keys.js';
 import { openLedger } from './node/ledger.js';
 import { voucherKeyFromPem } from './node/voucher-key.js';
 
 const env = readEnv(process.env);
 const voucherKey = voucherKeyFromPem(readFileSync(env.voucherKeyFile, 'utf8'));
 const ledger = openLedger(env.databaseFile);
+const holdStore = openHoldStore(env.databaseFile);
+const holderKeys = holderKeysFromDir(env.holderKeysDir);
 
 /** A secret of this process: the keys of visitors cannot be traced back to their addresses. */
 const VISITOR_KEY_SECRET = randomBytes(SERVER.visitorKeySecretBytes);
@@ -49,12 +54,14 @@ const app = createApp({
   log: writeLogLine,
   ledger,
   voucherKey,
+  holdStore,
+  holderKeys,
 });
 
 const server = serve({ fetch: app.fetch, hostname: SERVER.host, port: SERVER.port }, (info) => {
   writeLogLine(
     `Issuer listening on http://${info.address}:${String(info.port)}${SERVER.basePath}, ` +
-      `voucher key ${voucherKey.keyId}`,
+      `voucher key ${voucherKey.keyId}, holder keys ${[...holderKeys.keys()].join(' ')}`,
   );
 });
 
@@ -67,9 +74,20 @@ const stopTokenPrice = startTokenPriceSampler({
   log: writeLogLine,
 });
 
+// The count of the hold: the transfers of THKR, read every few minutes, counted by the hour.
+const stopHold = startHoldSync({
+  fetch: globalThis.fetch,
+  rpcUrl: env.chainRpcUrl,
+  store: holdStore,
+  holderKeys,
+  now: () => Date.now(),
+  log: writeLogLine,
+});
+
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
     stopTokenPrice();
+    stopHold();
     server.close();
   });
 }
