@@ -1,7 +1,8 @@
 // A top-up on the chain (decision 74). The paying wallet signs a text that names the blinded
-// vouchers, then sends the exact amount of the token to Thinkr. The issuer checks both: the
-// signature, so that nobody else can claim the payment for vouchers of their own, and the
-// transfer in the receipt of the transaction, through the RPC of the chain.
+// vouchers, or the ticket of the chat app that fetches them (26 Oct 2026), then sends the exact
+// amount of the token to Thinkr. The issuer checks both: the signature, so that nobody else can
+// claim the payment for vouchers of their own, and the transfer in the receipt of the transaction,
+// through the RPC of the chain.
 import { toEventSelector, verifyMessage, type Address, type Hex } from 'viem';
 import { z } from 'zod';
 
@@ -11,7 +12,9 @@ import { PAYMENTS } from '../config/payments.js';
 import type { PaymentNetwork, QuoteResponse } from '../contract.js';
 import { concatBytes, sha256, toHex } from '../lib/bytes.js';
 import { IssuerError } from '../lib/errors.js';
-import { rpc, type ChainDeps } from './chain.js';
+import { blockTimeMs, rpc, type ChainDeps } from './chain.js';
+import { holderQuoteKey, type QuoteHolder } from './holder-discount.js';
+import type { Ledger, PaymentTarget } from './ledger.js';
 
 export type PaymentDeps = ChainDeps;
 
@@ -30,6 +33,13 @@ export interface PaidTransfer {
 export const TRANSFER_TOPIC = toEventSelector('Transfer(address,address,uint256)');
 const SUCCESS_STATUS = '0x1';
 const ADDRESS_HEX_CHARS = 40;
+const PERCENT = 100;
+const UNITS_PER_USDG = 10 ** PAYMENTS.token.decimals;
+/** An amount of USDG as the signed text names it: "5", or "4.5" at a discount, never "1,000". */
+const USDG_TEXT = new Intl.NumberFormat('en-US', {
+  maximumFractionDigits: PAYMENTS.token.decimals,
+  useGrouping: false,
+});
 
 const receiptSchema = z
   .object({
@@ -46,14 +56,57 @@ export async function requestHash(blinded: readonly Uint8Array[]): Promise<strin
   return toHex(await sha256(concatBytes(blinded)));
 }
 
-/** The amount of a top-up in USDG, in the smallest unit of the token. */
+/** The amount of a top-up in USDG at its full price, in the smallest unit of the token. */
 export function topUpAmount(vouchers: number): bigint {
   return BigInt(vouchers * CREDIT.voucherUsd) * 10n ** BigInt(PAYMENTS.token.decimals);
 }
 
-/** The quote of a top-up paid in USDG, which costs the same in dollars as its credit. */
-export function quoteOf(vouchers: number, hash: string): QuoteResponse {
-  const usd = vouchers * CREDIT.voucherUsd;
+/**
+ * The amount of a top-up in USDG at `percent` off, in the smallest unit of the token: exact, as a
+ * voucher of $1 is a million units of USDG.
+ */
+export function usdgAmountOf(vouchers: number, percent: number): bigint {
+  return (topUpAmount(vouchers) * BigInt(PERCENT - percent)) / BigInt(PERCENT);
+}
+
+/** An amount of USDG, in the smallest unit, in whole USDG as the signed text names it. */
+export function usdgText(amount: bigint): string {
+  return USDG_TEXT.format(Number(amount) / UNITS_PER_USDG);
+}
+
+/** The text that the paying wallet signs for a top-up in USDG of this amount. */
+export function usdgTopUpMessage(vouchers: number, amount: bigint, target: PaymentTarget): string {
+  return MESSAGES.topUpMessage(vouchers, usdgText(amount), PAYMENTS.token.symbol, target);
+}
+
+export interface UsdgQuoteDeps {
+  readonly ledger: Pick<Ledger, 'saveUsdgQuote'>;
+  readonly now: () => number;
+}
+
+/**
+ * The quote of a top-up paid in USDG: its full price, which never moves and any wallet may pay,
+ * or the price at the discount of a holder, which the issuer keeps for that wallet for a while.
+ */
+export async function quoteInUsdg(
+  deps: UsdgQuoteDeps,
+  vouchers: number,
+  target: PaymentTarget,
+  holder: QuoteHolder | null,
+): Promise<QuoteResponse> {
+  const percent = holder?.discountPercent ?? 0;
+  const amount = usdgAmountOf(vouchers, percent);
+  let expiresAt: number | null = null;
+  if (holder !== null && percent > 0) {
+    const now = deps.now();
+    expiresAt = now + CREDIT.discountQuoteTtlMs;
+    deps.ledger.saveUsdgQuote(
+      await holderQuoteKey(target.hash, holder.payer),
+      amount,
+      { vouchers, expiresAt, discountPercent: percent },
+      now - CREDIT.discountQuoteKeepMs,
+    );
+  }
   return {
     asset: 'usdg',
     network: {
@@ -62,14 +115,58 @@ export function quoteOf(vouchers: number, hash: string): QuoteResponse {
     },
     token: { ...PAYMENTS.token },
     payTo: PAYMENTS.payTo,
-    amount: topUpAmount(vouchers).toString(),
+    amount: amount.toString(),
     vouchers,
-    usd,
-    creditUsd: usd,
-    expiresAt: null,
-    message: MESSAGES.topUpMessage(vouchers, hash),
+    usd: Number(amount) / UNITS_PER_USDG,
+    creditUsd: vouchers * CREDIT.voucherUsd,
+    expiresAt,
+    message: usdgTopUpMessage(vouchers, amount, target),
     faucets: PAYMENTS.faucets.map((faucet) => ({ ...faucet })),
+    discountPercent: percent,
+    countedBalance: holder === null ? null : holder.countedBalance.toString(),
   };
+}
+
+/** A top-up in USDG that a wallet says it paid. */
+export interface UsdgClaim {
+  readonly payer: string;
+  readonly txHash: string;
+  readonly target: PaymentTarget;
+  readonly vouchers: number;
+  /** In the smallest unit of USDG: the full price, or the amount of a quote at a discount. */
+  readonly amount: bigint;
+}
+
+export interface UsdgClaimDeps extends PaymentDeps {
+  readonly ledger: Pick<Ledger, 'usdgQuote' | 'claimPayment'>;
+}
+
+/**
+ * Throws unless the top-up in USDG is paid on the chain: at its full price, or at the price of a
+ * quote at a discount, by the wallet of that quote, in a block before the quote ended. Then
+ * records the payment. Another wallet does not find the quote of a holder.
+ */
+export async function assertUsdgPaid(deps: UsdgClaimDeps, claim: UsdgClaim): Promise<void> {
+  const discounted = claim.amount !== topUpAmount(claim.vouchers);
+  const quote = discounted
+    ? deps.ledger.usdgQuote(await holderQuoteKey(claim.target.hash, claim.payer), claim.amount)
+    : null;
+  if (discounted && quote?.vouchers !== claim.vouchers) {
+    throw new IssuerError('payment_invalid', MESSAGES.quoteUnknown);
+  }
+  const block = await assertPaid(deps, {
+    payer: claim.payer,
+    txHash: claim.txHash,
+    token: PAYMENTS.token.address,
+    payTo: PAYMENTS.payTo,
+    amount: claim.amount,
+  });
+  if (quote !== null && (await blockTimeMs(deps, block)) > quote.expiresAt) {
+    throw new IssuerError('payment_invalid', MESSAGES.quoteExpired);
+  }
+  if (deps.ledger.claimPayment(claim.txHash, claim.target, claim.vouchers) === 'other') {
+    throw new IssuerError('payment_used', MESSAGES.paymentUsed);
+  }
 }
 
 /**

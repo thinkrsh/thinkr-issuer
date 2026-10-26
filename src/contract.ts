@@ -2,7 +2,7 @@
 // these shapes (apps/dash/src/services/contract.ts mirrors them).
 import { z } from 'zod';
 
-import { MAX_TOP_UP_VOUCHERS, VOUCHER_SIGNATURE } from './config/credit.js';
+import { CREDIT, MAX_TOP_UP_VOUCHERS, VOUCHER_SIGNATURE } from './config/credit.js';
 import { HOLD } from './config/hold.js';
 import { MESSAGES } from './config/messages.js';
 
@@ -56,12 +56,22 @@ const blindedSchema = z
 /** What pays for a top-up: USDG, or the token of Thinkr, THKR, which buys 25% more credit. */
 export type PaymentAsset = 'usdg' | 'thkr';
 
+const walletSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
+
+/** The SHA-256 of the secret of a ticket, in hex. Only the chat app holds the secret. */
+const ticketHashSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
 /** POST /api/issuer/quote: what to sign and pay for a top-up of these blinded vouchers. */
 export const quoteRequestSchema = z.strictObject({
   keyId: keyIdSchema,
   blinded: blindedSchema,
   /** Unset: USDG, as before payment in THKR. */
   asset: z.enum(['usdg', 'thkr']).optional(),
+  /**
+   * The wallet that will pay, for the discount of a holder. Unset: no discount, and any wallet may
+   * pay, as before the discount.
+   */
+  payer: walletSchema.optional(),
 });
 
 export type QuoteRequest = z.infer<typeof quoteRequestSchema>;
@@ -93,6 +103,15 @@ export interface PaymentNetworkResponse {
   maxVouchers: number;
   /** Payment in THKR, or null while it is off. */
   tokenPayment: TokenPaymentInfo | null;
+  /** The discount of a holder: the percent off from each amount of THKR, lowest first. */
+  holderDiscounts: HolderDiscountTier[];
+}
+
+/** One tier of the discount of a holder (config/hold.ts, `discountTiers`). */
+export interface HolderDiscountTier {
+  /** In whole THKR, as the count of the hold takes it. */
+  minThkr: number;
+  percent: number;
 }
 
 /** Where payments in THKR go, and the credit they buy over USDG. */
@@ -114,19 +133,32 @@ export interface QuoteResponse {
   usd: number;
   /** The credit it buys, in dollars: more than `usd` when paid in THKR. */
   creditUsd: number;
-  /** When the amount stops holding, in milliseconds since 1970; null for USDG, which never moves. */
+  /**
+   * When the amount stops holding, in milliseconds since 1970: a quote in THKR, whose price moves,
+   * and a quote at the discount of a holder. Null for USDG at its full price, which never moves.
+   */
   expiresAt: number | null;
   /** The text that the paying wallet signs. */
   message: string;
   faucets: { name: string; url: string }[];
+  /** The percent off of a holder that the amount takes; 0 for none. */
+  discountPercent: number;
+  /**
+   * The THKR that the count of the hold takes for the paying wallet, in its smallest unit, as a
+   * decimal string; null when the quote named no wallet.
+   */
+  countedBalance: string | null;
 }
 
 /** POST /api/issuer/claims: a paid top-up, which the issuer answers with blind signatures. */
 export const claimRequestSchema = quoteRequestSchema.extend({
-  payer: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
+  payer: walletSchema,
   txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
   signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
-  /** For a top-up in THKR: the amount of its quote, in the smallest unit, as a decimal string. */
+  /**
+   * The amount of its quote, in the smallest unit, as a decimal string: for a top-up in THKR, and
+   * for one in USDG at a discount. Unset for USDG: the full price.
+   */
   amount: z
     .string()
     .regex(/^[1-9]\d{0,77}$/)
@@ -139,6 +171,74 @@ export interface ClaimResponse {
   /** One blind signature for each blinded voucher, in the same order, in base64url. */
   blindSignatures: string[];
 }
+
+/**
+ * POST /api/issuer/top-ups/quote: what to sign and pay for `vouchers` on a ticket of the chat app
+ * (26 Oct 2026). The dashboard names only the hash of the ticket and never sees a blinded voucher:
+ * the chat app blinds them once the ticket is paid, and fetches their signatures itself.
+ */
+export const ticketQuoteRequestSchema = z.strictObject({
+  ticket: ticketHashSchema,
+  vouchers: z
+    .number()
+    .int()
+    .min(1, MESSAGES.packInvalid)
+    .max(MAX_TOP_UP_VOUCHERS, MESSAGES.packInvalid),
+  /** Unset: USDG. */
+  asset: z.enum(['usdg', 'thkr']).optional(),
+  /** The wallet that will pay, for the discount of a holder. Unset: no discount. */
+  payer: walletSchema.optional(),
+});
+
+export type TicketQuoteRequest = z.infer<typeof ticketQuoteRequestSchema>;
+
+/** POST /api/issuer/top-ups/claims: a paid top-up, which the issuer counts on its ticket. */
+export const ticketClaimRequestSchema = ticketQuoteRequestSchema.extend({
+  payer: walletSchema,
+  txHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/),
+  signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
+  /** The amount of its quote, as for a claim of blinded vouchers. Unset for USDG: the full price. */
+  amount: z
+    .string()
+    .regex(/^[1-9]\d{0,77}$/)
+    .optional(),
+});
+
+export type TicketClaimRequest = z.infer<typeof ticketClaimRequestSchema>;
+
+export interface TicketClaimResponse {
+  /** The hash of the ticket, as the claim named it. */
+  ticket: string;
+  /** The vouchers that this payment bought, which wait on the ticket for the chat app. */
+  vouchers: number;
+}
+
+/**
+ * GET /api/issuer/top-ups/tickets/<hash>: the vouchers of a ticket, and the key to blind them. A
+ * ticket that no payment reached yet holds none.
+ */
+export interface TopUpTicketResponse {
+  /** The vouchers that the payments of the ticket bought. */
+  paid: number;
+  /** The vouchers that the chat app fetched. */
+  redeemed: number;
+  keyId: string;
+  /** The RSA public key, SPKI DER in base64url. */
+  publicKey: string;
+  voucherUsd: number;
+}
+
+/**
+ * POST /api/issuer/top-ups/tickets/redeem: the secret of a ticket and a blinded voucher for each
+ * voucher to fetch, which the issuer answers with blind signatures, as for a claim.
+ */
+export const ticketRedeemRequestSchema = z.strictObject({
+  ticket: base64UrlOf(CREDIT.ticketBytes),
+  keyId: keyIdSchema,
+  blinded: blindedSchema,
+});
+
+export type TicketRedeemRequest = z.infer<typeof ticketRedeemRequestSchema>;
 
 /**
  * GET /api/issuer/token/payments: every payment in THKR, the oldest first, for the treasury of the
@@ -194,9 +294,6 @@ export interface HoldWalletResponse {
   /** What one holder voucher is worth in dollars of credit. */
   voucherUsd: number;
 }
-
-const walletSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
-const ticketHashSchema = z.string().regex(/^[0-9a-f]{64}$/);
 
 /**
  * POST /api/issuer/hold/quote: the text that a wallet signs to claim `vouchers` of its holder

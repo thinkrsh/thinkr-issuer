@@ -1,12 +1,21 @@
 // Every message the issuer sends to the dashboard. The dashboard may show them to the user.
-import { CREDIT, MAX_TOP_UP_VOUCHERS } from './credit.js';
-import { PAYMENTS } from './payments.js';
+import type { PaymentTarget } from '../credit/ledger.js';
+import { MAX_TOP_UP_VOUCHERS } from './credit.js';
+
+/**
+ * The line that names what a top-up pays for: the blinded vouchers of a request, or the ticket of
+ * the chat app, so that a signature for the one never counts for the other.
+ */
+const TARGET_LABELS: Readonly<Record<PaymentTarget['kind'], string>> = {
+  request: 'Request',
+  ticket: 'Ticket',
+};
 
 /** The text that a wallet signs for a top-up of `vouchers`, paid with `price`. */
-function topUpText(vouchers: number, price: string, requestHash: string): string {
+function topUpText(vouchers: number, price: string, target: PaymentTarget): string {
   return [
     `Thinkr top-up: ${String(vouchers)} ${vouchers === 1 ? 'voucher' : 'vouchers'} for ${price}.`,
-    `Request: ${requestHash}`,
+    `${TARGET_LABELS[target.kind]}: ${target.hash}`,
     'Signing is free. It ties your payment to your vouchers.',
   ].join('\n');
 }
@@ -48,6 +57,13 @@ export const MESSAGES = {
   ticketCount: (vouchers: number): string =>
     `This ticket gives ${String(vouchers)} ${vouchers === 1 ? 'voucher' : 'vouchers'}, no more and no fewer.`,
   holderKeyMissing: 'No key signs holder vouchers this month.',
+  /** A ticket of a top-up that no payment reached yet. */
+  topUpTicketUnpaid: 'Nothing was paid on this ticket yet.',
+  /** More blinded vouchers than the payments of a ticket left to fetch. */
+  topUpTicketShort: (left: number): string =>
+    left === 0
+      ? 'The vouchers of this ticket were all fetched.'
+      : `This ticket has ${String(left)} ${left === 1 ? 'voucher' : 'vouchers'} left to fetch.`,
   claimsOpen:
     'This wallet has too many claims by transfer open. Send the amount of one of them, or wait an hour.',
   transferClaimUnknown: 'This claim by transfer does not exist. Start the claim again.',
@@ -59,18 +75,11 @@ export const MESSAGES = {
       `Ticket: ${ticket}`,
       'Signing is free. It claims the holder vouchers that this wallet earned.',
     ].join('\n'),
-  /** The text the wallet signs. It ties the payment to the blinded vouchers and costs nothing. */
-  topUpMessage: (vouchers: number, requestHash: string): string =>
-    topUpText(
-      vouchers,
-      `${String(vouchers * CREDIT.voucherUsd)} ${PAYMENTS.token.symbol}`,
-      requestHash,
-    ),
-  /** The same for a top-up paid in THKR, with the amount of its quote in whole THKR. */
-  tokenTopUpMessage: (
-    vouchers: number,
-    amount: string,
-    symbol: string,
-    requestHash: string,
-  ): string => topUpText(vouchers, `${amount} ${symbol}`, requestHash),
+  /**
+   * The text the wallet signs. It ties the payment to the blinded vouchers, or to the ticket that
+   * fetches them, and costs nothing. The amount is in whole USDG, or in whole THKR for a top-up paid
+   * in THKR.
+   */
+  topUpMessage: (vouchers: number, amount: string, symbol: string, target: PaymentTarget): string =>
+    topUpText(vouchers, `${amount} ${symbol}`, target),
 } as const;

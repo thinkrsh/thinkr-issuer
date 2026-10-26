@@ -8,7 +8,8 @@ import { TOKEN_PRICE, type TokenPaymentConfig } from '../config/token.js';
 import type { QuoteResponse, TokenPaymentInfo, TokenPaymentsResponse } from '../contract.js';
 import { IssuerError } from '../lib/errors.js';
 import { blockTimeMs } from './chain.js';
-import type { Ledger, TokenPaymentRecord } from './ledger.js';
+import type { Ledger, PaymentTarget, TokenPaymentRecord } from './ledger.js';
+import { holderQuoteKey, type QuoteHolder } from './holder-discount.js';
 import { assertPaid, type PaymentDeps } from './payment.js';
 import { quoteUnitsPerUsd } from './token-price.js';
 
@@ -29,7 +30,7 @@ export type OpenTokenPayment = TokenPaymentConfig & { readonly payTo: string };
 export interface TokenClaim {
   readonly payer: string;
   readonly txHash: string;
-  readonly requestHash: string;
+  readonly target: PaymentTarget;
   readonly vouchers: number;
   /** The amount of its quote, in the smallest unit of THKR. */
   readonly amount: bigint;
@@ -59,11 +60,16 @@ export function tokenPaymentInfo(config: TokenPaymentConfig): TokenPaymentInfo |
 
 /**
  * What `vouchers` cost in THKR, in millionths of a dollar: a dollar paid in THKR buys the credit of
- * a dollar plus the bonus, so 5 vouchers cost $4 (decision 95).
+ * a dollar plus the bonus, so 5 vouchers cost $4 (decision 95). The discount of a holder comes off
+ * first and stacks with the bonus: at 20% off, 5 vouchers cost $3.20.
  */
-export function tokenPriceMicros(vouchers: number, config: TokenPaymentConfig): number {
+export function tokenPriceMicros(
+  vouchers: number,
+  config: TokenPaymentConfig,
+  discountPercent: number,
+): number {
   const creditMicros = vouchers * CREDIT.voucherUsd * CREDIT.microsPerUsd;
-  return Math.ceil((creditMicros * PERCENT) / (PERCENT + config.bonusPercent));
+  return Math.ceil((creditMicros * (PERCENT - discountPercent)) / (PERCENT + config.bonusPercent));
 }
 
 /** The THKR, in its smallest unit, that pays for `vouchers` at a price, rounded up to a whole THKR. */
@@ -71,9 +77,10 @@ export function tokenAmount(
   vouchers: number,
   unitsPerUsd: bigint,
   config: TokenPaymentConfig,
+  discountPercent: number,
 ): bigint {
   const units = ceilDiv(
-    BigInt(tokenPriceMicros(vouchers, config)) * unitsPerUsd,
+    BigInt(tokenPriceMicros(vouchers, config, discountPercent)) * unitsPerUsd,
     BigInt(CREDIT.microsPerUsd),
   );
   const whole = 10n ** BigInt(config.token.decimals);
@@ -85,30 +92,40 @@ export function tokenTopUpMessage(
   config: TokenPaymentConfig,
   vouchers: number,
   amount: bigint,
-  requestHash: string,
+  target: PaymentTarget,
 ): string {
   const whole = WHOLE_NUMBER.format(amount / 10n ** BigInt(config.token.decimals));
-  return MESSAGES.tokenTopUpMessage(vouchers, whole, config.token.symbol, requestHash);
+  return MESSAGES.topUpMessage(vouchers, whole, config.token.symbol, target);
 }
 
 /**
  * Quotes `vouchers` in THKR at the price of the last hour, and keeps the quote, so that its amount
- * holds until it ends. Throws while the price of THKR is unknown.
+ * holds until it ends. A holder gets its discount, and then only its wallet finds the quote.
+ * Throws while the price of THKR is unknown.
  */
-export function quoteInToken(
+export async function quoteInToken(
   deps: TokenQuoteDeps,
   config: OpenTokenPayment,
   vouchers: number,
-  hash: string,
-): QuoteResponse {
+  target: PaymentTarget,
+  holder: QuoteHolder | null,
+): Promise<QuoteResponse> {
   const now = deps.now();
   const perUsd = quoteUnitsPerUsd(deps.ledger.tokenPrices(now - TOKEN_PRICE.windowMs), now);
   if (perUsd === null) {
     throw new IssuerError('upstream_error', MESSAGES.tokenPriceUnknown, PRICE_UNKNOWN_STATUS);
   }
-  const amount = tokenAmount(vouchers, perUsd, config);
+  const percent = holder?.discountPercent ?? 0;
+  const amount = tokenAmount(vouchers, perUsd, config, percent);
   const expiresAt = now + config.quoteTtlMs;
-  deps.ledger.saveTokenQuote(hash, amount, { vouchers, expiresAt }, now - config.quoteKeepMs);
+  const key =
+    holder !== null && percent > 0 ? await holderQuoteKey(target.hash, holder.payer) : target.hash;
+  deps.ledger.saveTokenQuote(
+    key,
+    amount,
+    { vouchers, expiresAt, discountPercent: percent },
+    now - config.quoteKeepMs,
+  );
   return {
     asset: 'thkr',
     network: { ...PAYMENTS.network, nativeCurrency: { ...PAYMENTS.network.nativeCurrency } },
@@ -116,24 +133,30 @@ export function quoteInToken(
     payTo: config.payTo,
     amount: amount.toString(),
     vouchers,
-    usd: tokenPriceMicros(vouchers, config) / CREDIT.microsPerUsd,
+    usd: tokenPriceMicros(vouchers, config, percent) / CREDIT.microsPerUsd,
     creditUsd: vouchers * CREDIT.voucherUsd,
     expiresAt,
-    message: tokenTopUpMessage(config, vouchers, amount, hash),
+    message: tokenTopUpMessage(config, vouchers, amount, target),
     faucets: [],
+    discountPercent: percent,
+    countedBalance: holder === null ? null : holder.countedBalance.toString(),
   };
 }
 
 /**
  * Throws unless a quote of this request asked for its amount, and the transfer of that amount
- * reached the wallet of THKR in a block before the quote ended. Then records the payment.
+ * reached the wallet of THKR in a block before the quote ended. Then records the payment. A quote
+ * at the discount of a holder counts only for the wallet of that holder.
  */
 export async function assertTokenPaid(
   deps: TokenClaimDeps,
   config: OpenTokenPayment,
   claim: TokenClaim,
 ): Promise<void> {
-  const quote = deps.ledger.tokenQuote(claim.requestHash, claim.amount);
+  const held = await holderQuoteKey(claim.target.hash, claim.payer);
+  const quote =
+    deps.ledger.tokenQuote(held, claim.amount) ??
+    deps.ledger.tokenQuote(claim.target.hash, claim.amount);
   if (quote?.vouchers !== claim.vouchers) {
     throw new IssuerError('payment_invalid', MESSAGES.quoteUnknown);
   }
@@ -150,10 +173,10 @@ export async function assertTokenPaid(
     txHash: claim.txHash,
     amount: claim.amount,
     vouchers: claim.vouchers,
-    usdMicros: tokenPriceMicros(claim.vouchers, config),
+    usdMicros: tokenPriceMicros(claim.vouchers, config, quote.discountPercent),
     paidAt,
   };
-  if (deps.ledger.claimTokenPayment(claim.requestHash, record) === 'other') {
+  if (deps.ledger.claimTokenPayment(claim.target, record) === 'other') {
     throw new IssuerError('payment_used', MESSAGES.paymentUsed);
   }
 }

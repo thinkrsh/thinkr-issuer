@@ -100,6 +100,11 @@ describe('GET /api/issuer/network', () => {
         payTo: TOKEN_PAYMENT.payTo,
         bonusPercent: TOKEN_PAYMENT.bonusPercent,
       },
+      holderDiscounts: [
+        { minThkr: 100_000, percent: 10 },
+        { minThkr: 1_000_000, percent: 20 },
+        { minThkr: 10_000_000, percent: 30 },
+      ],
     });
   });
 });

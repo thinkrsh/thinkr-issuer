@@ -3,6 +3,7 @@
 // Node-specific code.
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import { routePath } from 'hono/route';
 
 import type { Env } from './config/env.js';
 import { LIMITS } from './config/limits.js';
@@ -55,11 +56,17 @@ export function createApp(deps: AppDeps): Hono {
     windowMs: LIMITS.rateWindowMs,
     sweepThreshold: LIMITS.rateSweepThreshold,
   });
+  const ticketLimiter = createFixedWindowLimiter({
+    limit: LIMITS.ticketRequestsPerWindow,
+    windowMs: LIMITS.rateWindowMs,
+    sweepThreshold: LIMITS.rateSweepThreshold,
+  });
   app.route(
     '/',
     createIssuerRoute({
       ...deps,
       limiter,
+      ticketLimiter,
       testnetPayers: deps.env.testnetPayers,
       rpcUrl: deps.env.chainRpcUrl,
       tokenPayment: deps.tokenPayment ?? TOKEN_PAYMENT,
@@ -79,12 +86,21 @@ export function createApp(deps: AppDeps): Hono {
   return app;
 }
 
+/**
+ * Logs each request by the pattern of its route, never by its path, which can name a wallet or a
+ * ticket (26 Oct 2026): the server keeps no wallet address (the Privacy Policy).
+ */
 function requestLog(deps: Pick<AppDeps, 'now' | 'log'>): MiddlewareHandler {
   return async (c, next) => {
     const startMs = deps.now();
     await next();
     const durationMs = deps.now() - startMs;
-    const entry = { at: new Date(startMs), method: c.req.method, path: c.req.path, durationMs };
+    const entry = {
+      at: new Date(startMs),
+      method: c.req.method,
+      path: routePath(c, -1),
+      durationMs,
+    };
     deps.log(formatRequestLog({ ...entry, status: c.res.status }));
   };
 }

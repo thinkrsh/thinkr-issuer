@@ -15,12 +15,32 @@ import { isExcluded } from './sync.js';
 
 const HOURS_PER_DAY = 24n;
 
+/** The balance of each wallet as the count last read it, and the lowest of the 24 hours before. */
+function balancesOf(store: Pick<HoldStore, 'cursor' | 'transfers'>): {
+  now: Map<string, bigint>;
+  lowest: Map<string, bigint>;
+} {
+  const { indexedAt } = store.cursor();
+  return indexedAt === null
+    ? { now: new Map<string, bigint>(), lowest: new Map<string, bigint>() }
+    : balancesAt(store.transfers(), indexedAt);
+}
+
+/**
+ * The THKR that the count takes for a wallet now, in its smallest unit: the lowest balance of the
+ * last 24 hours. Zero for a wallet that earns nothing by name. `address` is in lower case.
+ */
+export function countedBalanceOf(
+  store: Pick<HoldStore, 'cursor' | 'transfers'>,
+  address: string,
+): bigint {
+  if (isExcluded(address)) return 0n;
+  return balancesOf(store).lowest.get(address) ?? 0n;
+}
+
 export function walletStatus(store: HoldStore, address: string): HoldWalletResponse {
   const { indexedAt, hour } = store.cursor();
-  const { now, lowest } =
-    indexedAt === null
-      ? { now: new Map<string, bigint>(), lowest: new Map<string, bigint>() }
-      : balancesAt(store.transfers(), indexedAt);
+  const { now, lowest } = balancesOf(store);
   const wallet = store.wallet(address);
   const counted = lowest.get(address) ?? 0n;
   const dayUnits = hourUnitsOf(counted) * HOURS_PER_DAY;

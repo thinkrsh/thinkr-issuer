@@ -51,7 +51,7 @@ export interface AccrualInput {
 const DAY_MS = 24 * HOLD.hourMs;
 const HOURS_PER_DAY = 24n;
 /** THKR has 18 decimals. */
-const UNITS_PER_THKR = 10n ** 18n;
+export const UNITS_PER_THKR = 10n ** 18n;
 const MINIMUM_UNITS = BigInt(HOLD.minimumThkr) * UNITS_PER_THKR;
 
 /** The unit-hours of THKR that make one holder voucher: 1M THKR held for 24 hours. */

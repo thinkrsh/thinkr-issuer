@@ -18,6 +18,19 @@ export const CREDIT = {
   maxTopUpUsd: 200,
   /** Amounts in dollars count in millionths of a dollar, so that every sum stays exact. */
   microsPerUsd: 1_000_000,
+  /**
+   * How long a quote in USDG at the discount of a holder (config/hold.ts, `discountTiers`) holds its
+   * amount, and how long the issuer keeps it, so that a payment sent in time can still be claimed:
+   * as a quote in THKR (config/token.ts). A wallet that sells its THKR loses the discount with the
+   * next quote.
+   */
+  discountQuoteTtlMs: 15 * 60_000,
+  discountQuoteKeepMs: 30 * 24 * 60 * 60_000,
+  /**
+   * Bytes of the secret of the ticket of a top-up (26 Oct 2026): the chat app makes it, keeps it,
+   * and names only its SHA-256 to the dashboard. Must match CREDIT.ticketBytes in apps/app.
+   */
+  ticketBytes: 32,
 } as const;
 
 /** The most vouchers that one top-up may buy: the cap of decision 95, in vouchers. */

@@ -35,6 +35,18 @@ export const HOLD = {
   dailyPoolUsd: 250,
   /** What a holder voucher starts at, in dollars of credit (decision 189). */
   voucherUsd: 0.4,
+  /**
+   * The discount of a top-up for a holder (the owner, 26 Oct 2026: "token2 berbayar kita kasih
+   * diskon buat holder", then "Setuju" to three tiers): the wallet that pays gets the percent of
+   * the highest tier that the THKR of its count reaches, the lowest balance of the last
+   * `countHours`, so that THKR bought for a top-up and sold after it buys no discount. It stacks
+   * with the bonus of a payment in THKR (config/token.ts). Lowest tier first.
+   */
+  discountTiers: [
+    { minThkr: 100_000, percent: 10 },
+    { minThkr: 1_000_000, percent: 20 },
+    { minThkr: 10_000_000, percent: 30 },
+  ],
   /** The wallets that earn nothing ("setuju", 24 Oct 2026); any other contract earns nothing too. */
   excluded: [
     TOKEN_PRICE.curve,

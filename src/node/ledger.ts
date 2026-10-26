@@ -9,9 +9,12 @@ import { DatabaseSync } from 'node:sqlite';
 import type {
   Ledger,
   PaymentClaim,
+  PaymentTarget,
   PriceSample,
+  TicketRedemption,
   TokenPaymentRecord,
   TokenQuote,
+  TopUpTicket,
 } from '../credit/ledger.js';
 
 const IN_MEMORY = ':memory:';
@@ -27,6 +30,15 @@ const SCHEMA = `
     amount TEXT NOT NULL,
     vouchers INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
+    discount_percent INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (request_hash, amount)
+  ) STRICT;
+  CREATE TABLE IF NOT EXISTS usdg_quotes (
+    request_hash TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    vouchers INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    discount_percent INTEGER NOT NULL,
     PRIMARY KEY (request_hash, amount)
   ) STRICT;
   CREATE TABLE IF NOT EXISTS token_payments (
@@ -40,7 +52,35 @@ const SCHEMA = `
     at INTEGER PRIMARY KEY,
     units_per_usd TEXT NOT NULL
   ) STRICT;
+  CREATE TABLE IF NOT EXISTS top_up_tickets (
+    hash TEXT PRIMARY KEY,
+    paid INTEGER NOT NULL,
+    redeemed INTEGER NOT NULL
+  ) STRICT;
+  CREATE TABLE IF NOT EXISTS top_up_redemptions (
+    request_hash TEXT PRIMARY KEY,
+    ticket_hash TEXT NOT NULL,
+    vouchers INTEGER NOT NULL
+  ) STRICT;
 `;
+
+/**
+ * Columns that came after a table: a ledger from before them gets each one at its default. The
+ * holder discount of 26 Oct 2026 added the percent of a quote in THKR.
+ */
+const ADDED_COLUMNS: readonly { table: string; column: string; definition: string }[] = [
+  { table: 'token_quotes', column: 'discount_percent', definition: 'INTEGER NOT NULL DEFAULT 0' },
+];
+
+function addMissingColumns(db: DatabaseSync): void {
+  for (const { table, column, definition } of ADDED_COLUMNS) {
+    const names = db
+      .prepare(`PRAGMA table_info(${table})`)
+      .all()
+      .map((row) => row.name);
+    if (!names.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
 
 /** Opens the ledger in `file`, or in memory for ':memory:', and makes its tables when missing. */
 export function openLedger(file: string): Ledger {
@@ -48,20 +88,27 @@ export function openLedger(file: string): Ledger {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
   db.exec(SCHEMA);
+  addMissingColumns(db);
 
   const selectPayment = db.prepare('SELECT request_hash FROM payments WHERE tx_hash = ?');
   const insertPayment = db.prepare(
     'INSERT OR IGNORE INTO payments (tx_hash, request_hash, vouchers) VALUES (?, ?, ?)',
   );
-  const upsertQuote = db.prepare(
-    'INSERT INTO token_quotes (request_hash, amount, vouchers, expires_at) VALUES (?, ?, ?, ?) ' +
-      'ON CONFLICT (request_hash, amount) DO UPDATE SET ' +
-      'vouchers = excluded.vouchers, expires_at = excluded.expires_at',
-  );
-  const dropQuotes = db.prepare('DELETE FROM token_quotes WHERE expires_at < ?');
-  const selectQuote = db.prepare(
-    'SELECT vouchers, expires_at FROM token_quotes WHERE request_hash = ? AND amount = ?',
-  );
+  const quoteTable = (table: 'token_quotes' | 'usdg_quotes') => ({
+    upsert: db.prepare(
+      `INSERT INTO ${table} (request_hash, amount, vouchers, expires_at, discount_percent) ` +
+        'VALUES (?, ?, ?, ?, ?) ON CONFLICT (request_hash, amount) DO UPDATE SET ' +
+        'vouchers = excluded.vouchers, expires_at = excluded.expires_at, ' +
+        'discount_percent = excluded.discount_percent',
+    ),
+    drop: db.prepare(`DELETE FROM ${table} WHERE expires_at < ?`),
+    select: db.prepare(
+      `SELECT vouchers, expires_at, discount_percent FROM ${table} ` +
+        'WHERE request_hash = ? AND amount = ?',
+    ),
+  });
+  const tokenQuotes = quoteTable('token_quotes');
+  const usdgQuotes = quoteTable('usdg_quotes');
   const insertTokenPayment = db.prepare(
     'INSERT INTO token_payments (tx_hash, amount, vouchers, usd_micros, paid_at) ' +
       'VALUES (?, ?, ?, ?, ?)',
@@ -76,6 +123,20 @@ export function openLedger(file: string): Ledger {
   const dropPrices = db.prepare('DELETE FROM token_prices WHERE at < ?');
   const selectPrices = db.prepare(
     'SELECT at, units_per_usd FROM token_prices WHERE at >= ? ORDER BY at',
+  );
+  const addPaid = db.prepare(
+    'INSERT INTO top_up_tickets (hash, paid, redeemed) VALUES (?, ?, 0) ' +
+      'ON CONFLICT (hash) DO UPDATE SET paid = paid + excluded.paid',
+  );
+  const selectTicket = db.prepare('SELECT paid, redeemed FROM top_up_tickets WHERE hash = ?');
+  const addRedeemed = db.prepare(
+    'UPDATE top_up_tickets SET redeemed = redeemed + ? WHERE hash = ?',
+  );
+  const selectRedemption = db.prepare(
+    'SELECT ticket_hash, vouchers FROM top_up_redemptions WHERE request_hash = ?',
+  );
+  const insertRedemption = db.prepare(
+    'INSERT INTO top_up_redemptions (request_hash, ticket_hash, vouchers) VALUES (?, ?, ?)',
   );
 
   const transaction = <T>(work: () => T, keep: (result: T) => boolean): T => {
@@ -95,32 +156,81 @@ export function openLedger(file: string): Ledger {
     return typeof value === 'string' ? value : null;
   };
 
-  const claimPayment = (txHash: string, requestHash: string, vouchers: number): PaymentClaim => {
-    if (insertPayment.run(txHash, requestHash, vouchers).changes === 1) return 'new';
-    return paymentRequest(txHash) === requestHash ? 'same' : 'other';
+  /** Records a payment inside a transaction: a new one adds its vouchers to its ticket. */
+  const recordPayment = (txHash: string, target: PaymentTarget, vouchers: number): PaymentClaim => {
+    if (insertPayment.run(txHash, target.hash, vouchers).changes === 1) {
+      if (target.kind === 'ticket') addPaid.run(target.hash, vouchers);
+      return 'new';
+    }
+    return paymentRequest(txHash) === target.hash ? 'same' : 'other';
+  };
+
+  const ticket = (hash: string): TopUpTicket | null => {
+    const row = selectTicket.get(hash);
+    if (row === undefined) return null;
+    return { paid: integer(row.paid), redeemed: integer(row.redeemed) };
+  };
+
+  const saveQuote = (
+    table: ReturnType<typeof quoteTable>,
+    requestHash: string,
+    amount: bigint,
+    quote: TokenQuote,
+    dropBefore: number,
+  ): void => {
+    transaction(
+      () => {
+        table.drop.run(dropBefore);
+        table.upsert.run(
+          requestHash,
+          amount.toString(),
+          quote.vouchers,
+          quote.expiresAt,
+          quote.discountPercent,
+        );
+      },
+      () => true,
+    );
+  };
+
+  const readQuote = (
+    table: ReturnType<typeof quoteTable>,
+    requestHash: string,
+    amount: bigint,
+  ): TokenQuote | null => {
+    const row = table.select.get(requestHash, amount.toString());
+    if (row === undefined) return null;
+    return {
+      vouchers: integer(row.vouchers),
+      expiresAt: integer(row.expires_at),
+      discountPercent: integer(row.discount_percent),
+    };
   };
 
   return {
     paymentRequest,
-    claimPayment,
-    saveTokenQuote(requestHash, amount, quote, dropBefore) {
-      transaction(
-        () => {
-          dropQuotes.run(dropBefore);
-          upsertQuote.run(requestHash, amount.toString(), quote.vouchers, quote.expiresAt);
-        },
-        () => true,
+    claimPayment(txHash, target, vouchers): PaymentClaim {
+      return transaction(
+        () => recordPayment(txHash, target, vouchers),
+        (claim) => claim === 'new',
       );
     },
-    tokenQuote(requestHash, amount): TokenQuote | null {
-      const row = selectQuote.get(requestHash, amount.toString());
-      if (row === undefined) return null;
-      return { vouchers: integer(row.vouchers), expiresAt: integer(row.expires_at) };
+    saveTokenQuote(requestHash, amount, quote, dropBefore) {
+      saveQuote(tokenQuotes, requestHash, amount, quote, dropBefore);
     },
-    claimTokenPayment(requestHash, payment): PaymentClaim {
+    tokenQuote(requestHash, amount): TokenQuote | null {
+      return readQuote(tokenQuotes, requestHash, amount);
+    },
+    saveUsdgQuote(requestHash, amount, quote, dropBefore) {
+      saveQuote(usdgQuotes, requestHash, amount, quote, dropBefore);
+    },
+    usdgQuote(requestHash, amount): TokenQuote | null {
+      return readQuote(usdgQuotes, requestHash, amount);
+    },
+    claimTokenPayment(target, payment): PaymentClaim {
       return transaction(
         (): PaymentClaim => {
-          const claim = claimPayment(payment.txHash, requestHash, payment.vouchers);
+          const claim = recordPayment(payment.txHash, target, payment.vouchers);
           if (claim === 'new') {
             insertTokenPayment.run(
               payment.txHash,
@@ -158,6 +268,25 @@ export function openLedger(file: string): Ledger {
         at: integer(row.at),
         unitsPerUsd: BigInt(text(row.units_per_usd)),
       }));
+    },
+    ticket,
+    redeemTicket(hash, requestHash, vouchers): TicketRedemption {
+      return transaction(
+        (): TicketRedemption => {
+          const before = selectRedemption.get(requestHash);
+          if (before !== undefined) {
+            const same = text(before.ticket_hash) === hash && integer(before.vouchers) === vouchers;
+            return same ? 'same' : 'other';
+          }
+          const current = ticket(hash);
+          if (current === null) return 'unpaid';
+          if (current.paid - current.redeemed < vouchers) return 'short';
+          insertRedemption.run(requestHash, hash, vouchers);
+          addRedeemed.run(vouchers, hash);
+          return 'new';
+        },
+        (outcome) => outcome === 'new',
+      );
     },
   };
 }
