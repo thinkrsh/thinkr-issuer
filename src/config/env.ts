@@ -30,6 +30,19 @@ const envSchema = z.object({
    * in its URL (keep it in secret/). Unset, the public RPC of the chain, which is rate limited.
    */
   CHAIN_RPC_URL: z.url({ protocol: /^https?$/ }).optional(),
+  /**
+   * The factory of the deposit addresses of claims by transfer (apps/contracts), as deployed
+   * on the chain of payments. Not secret.
+   */
+  CLAIM_FACTORY: z
+    .string()
+    .trim()
+    .regex(/^0x[0-9a-fA-F]{40}$/),
+  /**
+   * The file of the private key of the claim wallet, the operator of that factory, as 0x hex: it
+   * settles and refunds the deposits and pays their gas. On the server it never leaves the server.
+   */
+  CLAIM_OPERATOR_KEY_FILE: z.string().trim().min(1),
 });
 
 export interface Env {
@@ -41,6 +54,9 @@ export interface Env {
   readonly testnetPayers: readonly string[];
   /** Null: the public RPC of the chain. */
   readonly chainRpcUrl: string | null;
+  /** In lower case. */
+  readonly claimFactory: string;
+  readonly claimOperatorKeyFile: string;
 }
 
 export type EnvSource = Readonly<Record<string, string | undefined>>;
@@ -65,5 +81,7 @@ export function readEnv(source: EnvSource): Env {
       .map((payer) => payer.trim().toLowerCase())
       .filter((payer) => payer !== ''),
     chainRpcUrl: result.data.CHAIN_RPC_URL ?? null,
+    claimFactory: result.data.CLAIM_FACTORY.toLowerCase(),
+    claimOperatorKeyFile: result.data.CLAIM_OPERATOR_KEY_FILE,
   };
 }

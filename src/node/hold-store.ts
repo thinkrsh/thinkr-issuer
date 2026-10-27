@@ -14,6 +14,8 @@ import {
 import type {
   ClaimInput,
   ClaimResult,
+  CountKey,
+  FeeCursor,
   HoldCursor,
   HoldStore,
   HoldTicket,
@@ -24,6 +26,7 @@ import type {
   RedeemOutcome,
   TransferClaim,
 } from '../hold/store.js';
+import type { CreatorFee, DayPool } from '../hold/fee-pool.js';
 import type { WalletKind } from '../hold/transfers.js';
 import { addMissingColumns, type AddedColumn } from './sqlite.js';
 
@@ -43,6 +46,7 @@ const SCHEMA = `
   ) STRICT;
   CREATE INDEX IF NOT EXISTS hold_transfers_order ON hold_transfers (block, log_index);
   CREATE INDEX IF NOT EXISTS hold_transfers_to ON hold_transfers (to_address, from_address);
+  CREATE INDEX IF NOT EXISTS hold_transfers_from ON hold_transfers (from_address);
   CREATE TABLE IF NOT EXISTS hold_cursor (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     block INTEGER,
@@ -89,16 +93,48 @@ const SCHEMA = `
     id INTEGER PRIMARY KEY CHECK (id = 1),
     start_at INTEGER NOT NULL
   ) STRICT;
+  CREATE TABLE IF NOT EXISTS hold_fees (
+    tx_hash TEXT NOT NULL,
+    log_index INTEGER NOT NULL,
+    block INTEGER NOT NULL,
+    at INTEGER NOT NULL,
+    amount TEXT NOT NULL,
+    PRIMARY KEY (tx_hash, log_index)
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS hold_fees_at ON hold_fees (at);
+  CREATE TABLE IF NOT EXISTS hold_fee_cursor (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    block INTEGER,
+    indexed_at INTEGER
+  ) STRICT;
+  CREATE TABLE IF NOT EXISTS hold_days (
+    day INTEGER PRIMARY KEY,
+    fee_wei TEXT NOT NULL,
+    eth_usd_micros TEXT NOT NULL,
+    pool_units TEXT NOT NULL
+  ) STRICT;
   INSERT OR IGNORE INTO hold_cursor (id) VALUES (1);
+  INSERT OR IGNORE INTO hold_fee_cursor (id) VALUES (1);
 `;
 
 /**
  * Columns that came after a table: a store from before gets each one at its default. The count of
- * holder vouchers that a claim by transfer asks for came on 27 Oct 2026; null asks for all.
+ * holder vouchers that a claim by transfer asks for came on 27 Oct 2026; null asks for all. The
+ * deposit addresses came the same day; a claim of the burn address has none. The version of the
+ * rules of the count came that day too; a count from before took version 1.
  */
 const ADDED_COLUMNS: readonly AddedColumn[] = [
   { table: 'hold_transfer_claims', column: 'wanted', definition: 'INTEGER' },
+  { table: 'hold_transfer_claims', column: 'claim_id', definition: 'TEXT' },
+  { table: 'hold_transfer_claims', column: 'deposit', definition: 'TEXT' },
+  { table: 'hold_transfer_claims', column: 'released_at', definition: 'INTEGER' },
+  { table: 'hold_count', column: 'version', definition: 'INTEGER NOT NULL DEFAULT 1' },
 ];
+
+/** Indexes of the columns that came after their table, made once the columns exist. */
+const ADDED_INDEXES = `
+  CREATE INDEX IF NOT EXISTS hold_transfer_claims_deposit ON hold_transfer_claims (deposit);
+`;
 
 /** Opens the store in `file`, or in memory for ':memory:', and makes its tables when missing. */
 export function openHoldStore(file: string): HoldStore {
@@ -107,6 +143,7 @@ export function openHoldStore(file: string): HoldStore {
   db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
   db.exec(SCHEMA);
   addMissingColumns(db, ADDED_COLUMNS);
+  db.exec(ADDED_INDEXES);
 
   const selectCursor = db.prepare('SELECT block, indexed_at, hour FROM hold_cursor WHERE id = 1');
   const insertTransfer = db.prepare(
@@ -115,9 +152,27 @@ export function openHoldStore(file: string): HoldStore {
   );
   const moveBlock = db.prepare('UPDATE hold_cursor SET block = ?, indexed_at = ? WHERE id = 1');
   const moveHour = db.prepare('UPDATE hold_cursor SET hour = ? WHERE id = 1');
+  const selectFeeCursor = db.prepare('SELECT block, indexed_at FROM hold_fee_cursor WHERE id = 1');
+  const insertFee = db.prepare(
+    'INSERT OR IGNORE INTO hold_fees (tx_hash, log_index, block, at, amount) VALUES (?, ?, ?, ?, ?)',
+  );
+  const moveFeeBlock = db.prepare(
+    'UPDATE hold_fee_cursor SET block = ?, indexed_at = ? WHERE id = 1',
+  );
+  const selectFeesBetween = db.prepare('SELECT amount FROM hold_fees WHERE at >= ? AND at < ?');
+  const selectDayPools = db.prepare(
+    'SELECT day, fee_wei, eth_usd_micros, pool_units FROM hold_days ORDER BY day',
+  );
+  const insertDayPool = db.prepare(
+    'INSERT OR IGNORE INTO hold_days (day, fee_wei, eth_usd_micros, pool_units) VALUES (?, ?, ?, ?)',
+  );
   const selectTransfers = db.prepare(
     'SELECT tx_hash, log_index, block, at, from_address, to_address, amount FROM hold_transfers ' +
       'ORDER BY block, log_index',
+  );
+  const selectTransfersOf = db.prepare(
+    'SELECT tx_hash, log_index, block, at, from_address, to_address, amount FROM hold_transfers ' +
+      'WHERE to_address = ? OR from_address = ? ORDER BY block, log_index',
   );
   const selectToCheck = db.prepare(
     'SELECT seen.address FROM (SELECT from_address AS address FROM hold_transfers ' +
@@ -151,10 +206,10 @@ export function openHoldStore(file: string): HoldStore {
     'SELECT hour, wallets, raw_units, paid_units FROM hold_hours ORDER BY hour DESC LIMIT 1',
   );
 
-  const selectCountStart = db.prepare('SELECT start_at FROM hold_count WHERE id = 1');
-  const setCountStart = db.prepare(
-    'INSERT INTO hold_count (id, start_at) VALUES (1, ?) ' +
-      'ON CONFLICT (id) DO UPDATE SET start_at = excluded.start_at',
+  const selectCountKey = db.prepare('SELECT start_at, version FROM hold_count WHERE id = 1');
+  const setCountKey = db.prepare(
+    'INSERT INTO hold_count (id, start_at, version) VALUES (1, ?, ?) ' +
+      'ON CONFLICT (id) DO UPDATE SET start_at = excluded.start_at, version = excluded.version',
   );
   const forgetEarned = db.prepare(
     "UPDATE hold_wallets SET earned_units = '0', first_earned_at = NULL",
@@ -188,17 +243,33 @@ export function openHoldStore(file: string): HoldStore {
       'FROM hold_tickets',
   );
   const transferClaimColumns =
-    'ticket_hash, wallet, amount, created_at, expires_at, tx_hash, vouchers, wanted';
+    'ticket_hash, wallet, amount, created_at, expires_at, tx_hash, vouchers, wanted, ' +
+    'claim_id, deposit, released_at';
   const selectTransferClaim = db.prepare(
     `SELECT ${transferClaimColumns} FROM hold_transfer_claims WHERE ticket_hash = ?`,
   );
-  const selectOpenAmounts = db.prepare(
-    'SELECT amount FROM hold_transfer_claims ' +
+  const selectOpenCount = db.prepare(
+    'SELECT COUNT(*) AS open FROM hold_transfer_claims ' +
       'WHERE wallet = ? AND tx_hash IS NULL AND expires_at >= ?',
   );
   const insertTransferClaim = db.prepare(
     'INSERT INTO hold_transfer_claims ' +
-      '(ticket_hash, wallet, amount, created_at, expires_at, wanted) VALUES (?, ?, ?, ?, ?, ?)',
+      '(ticket_hash, wallet, amount, created_at, expires_at, wanted, claim_id, deposit) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  );
+  // A deposit to release: THKR reached it after the claim wallet last settled or refunded it.
+  const selectDepositsToRelease = db.prepare(
+    `SELECT ${transferClaimColumns} FROM hold_transfer_claims AS claim ` +
+      'WHERE deposit IS NOT NULL AND EXISTS (SELECT 1 FROM hold_transfers ' +
+      'WHERE to_address = claim.deposit AND at > COALESCE(claim.released_at, 0)) ' +
+      'ORDER BY created_at',
+  );
+  const markReleased = db.prepare(
+    'UPDATE hold_transfer_claims SET released_at = ? WHERE ticket_hash = ?',
+  );
+  const closeClaim = db.prepare(
+    'UPDATE hold_transfer_claims SET tx_hash = ?, vouchers = 0 ' +
+      'WHERE ticket_hash = ? AND tx_hash IS NULL',
   );
   const selectWaitingClaims = db.prepare(
     `SELECT ${transferClaimColumns} FROM hold_transfer_claims ` +
@@ -291,6 +362,9 @@ export function openHoldStore(file: string): HoldStore {
     txHash: optionalText(row.tx_hash),
     vouchers: optionalInteger(row.vouchers),
     wanted: optionalInteger(row.wanted),
+    claimId: optionalText(row.claim_id),
+    deposit: optionalText(row.deposit),
+    releasedAt: optionalInteger(row.released_at),
   });
 
   const transferClaim = (ticketHash: string): TransferClaim | null => {
@@ -324,15 +398,48 @@ export function openHoldStore(file: string): HoldStore {
       });
     },
     transfers(): HoldTransfer[] {
-      return selectTransfers.all().map((row) => ({
-        txHash: text(row.tx_hash),
-        logIndex: integer(row.log_index),
-        block: integer(row.block),
-        at: integer(row.at),
-        from: text(row.from_address),
-        to: text(row.to_address),
-        amount: BigInt(text(row.amount)),
-      }));
+      return selectTransfers.all().map(transferOf);
+    },
+    feeCursor(): FeeCursor {
+      const row = selectFeeCursor.get();
+      return { block: optionalInteger(row?.block), indexedAt: optionalInteger(row?.indexed_at) };
+    },
+    addCreatorFees(fees: readonly CreatorFee[], block, at) {
+      transaction(() => {
+        for (const fee of fees) {
+          insertFee.run(fee.txHash, fee.logIndex, fee.block, fee.at, fee.amount.toString());
+        }
+        moveFeeBlock.run(block, at);
+      });
+    },
+    creatorFeesBetween(from, to) {
+      return selectFeesBetween
+        .all(from, to)
+        .reduce((sum, row) => sum + BigInt(text(row.amount)), 0n);
+    },
+    dayPools() {
+      return new Map(
+        selectDayPools.all().map((row): [number, DayPool] => [
+          integer(row.day),
+          {
+            day: integer(row.day),
+            feeWei: BigInt(text(row.fee_wei)),
+            ethUsdMicros: BigInt(text(row.eth_usd_micros)),
+            poolUnits: BigInt(text(row.pool_units)),
+          },
+        ]),
+      );
+    },
+    setDayPool(pool: DayPool) {
+      insertDayPool.run(
+        pool.day,
+        pool.feeWei.toString(),
+        pool.ethUsdMicros.toString(),
+        pool.poolUnits.toString(),
+      );
+    },
+    transfersOf(address) {
+      return selectTransfersOf.all(address, address).map(transferOf);
     },
     walletsToCheck(before) {
       return selectToCheck.all(before).map((row) => text(row.address));
@@ -356,15 +463,17 @@ export function openHoldStore(file: string): HoldStore {
         ]),
       );
     },
-    countStart() {
-      return optionalInteger(selectCountStart.get()?.start_at);
+    countKey(): CountKey | null {
+      const row = selectCountKey.get();
+      if (row === undefined) return null;
+      return { startAt: integer(row.start_at), version: integer(row.version) };
     },
-    restartCount(startAt) {
+    restartCount(key: CountKey) {
       transaction(() => {
         forgetEarned.run();
         forgetHours.run();
         forgetHour.run();
-        setCountStart.run(startAt);
+        setCountKey.run(key.startAt, key.version);
       });
     },
     addHours(accruals: readonly HourAccrual[]) {
@@ -424,19 +533,17 @@ export function openHoldStore(file: string): HoldStore {
             : { outcome: 'ticket_taken' };
         }
         if (ticket(input.ticketHash) !== null) return { outcome: 'ticket_taken' };
-        const taken = new Set(
-          selectOpenAmounts.all(input.wallet, input.at).map((row) => BigInt(text(row.amount))),
-        );
-        if (taken.size >= input.maxOpen) return { outcome: 'too_many_open' };
-        const amount = input.pickAmount(taken);
-        if (taken.has(amount)) throw new Error('A claim by transfer took an amount already open.');
+        const open = integer(selectOpenCount.get(input.wallet, input.at)?.open);
+        if (open >= input.maxOpen) return { outcome: 'too_many_open' };
         insertTransferClaim.run(
           input.ticketHash,
           input.wallet,
-          amount.toString(),
+          input.amount.toString(),
           input.at,
           input.expiresAt,
           input.wanted,
+          input.claimId,
+          input.deposit,
         );
         const made = transferClaim(input.ticketHash);
         if (made === null) throw new Error('The claim by transfer was not kept.');
@@ -456,6 +563,16 @@ export function openHoldStore(file: string): HoldStore {
         claim.expiresAt,
       );
       return row === undefined ? null : text(row.tx_hash);
+    },
+    closeTransferClaim(ticketHash, txHash) {
+      closeClaim.run(txHash, ticketHash);
+      return transferClaim(ticketHash);
+    },
+    depositsToRelease() {
+      return selectDepositsToRelease.all().map(transferClaimOf);
+    },
+    markReleased(ticketHash, at) {
+      markReleased.run(at, ticketHash);
     },
     settleTransferClaim(input): TransferClaim | null {
       return transaction((): TransferClaim | null => {
@@ -508,6 +625,19 @@ export function openHoldStore(file: string): HoldStore {
         paidUnits: BigInt(text(row.paid_units)),
       };
     },
+  };
+}
+
+/** A transfer of THKR as the store keeps it. */
+function transferOf(row: Record<string, unknown>): HoldTransfer {
+  return {
+    txHash: text(row.tx_hash),
+    logIndex: integer(row.log_index),
+    block: integer(row.block),
+    at: integer(row.at),
+    from: text(row.from_address),
+    to: text(row.to_address),
+    amount: BigInt(text(row.amount)),
   };
 }
 

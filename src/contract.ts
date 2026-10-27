@@ -419,7 +419,11 @@ export interface HoldTotalsResponse {
   pending: number;
   /** The wallets that earned in the last hour counted. */
   earning: number;
-  dailyPoolUsd: number;
+  /**
+   * The pool of the day of the last hour counted, in dollars: 15% of the creator fees of the day
+   * before (config/hold.ts, `feePool`); null before the first count.
+   */
+  dailyPoolUsd: number | null;
   voucherUsd: number;
   countedUntil: number | null;
 }

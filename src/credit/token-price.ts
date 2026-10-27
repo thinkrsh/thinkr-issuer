@@ -39,6 +39,8 @@ const SQRT_PRICE_MASK = (1n << 160n) - 1n;
 
 /** 2^96: the Q64.96 format in which Uniswap keeps the root of a price. */
 const Q96 = 1n << 96n;
+/** ETH has 18 decimals. */
+const WEI_PER_ETH = 10n ** 18n;
 
 /** The market of THKR: the root of its price in its pool, its liquidity, and the price of ETH. */
 export interface TokenMarket {
@@ -67,6 +69,14 @@ export function unitsPerUsd(market: TokenMarket): bigint {
     (usdUnits * market.tokenSqrtPriceX96 * market.tokenSqrtPriceX96) /
     (market.ethSqrtPriceX96 * market.ethSqrtPriceX96)
   );
+}
+
+/**
+ * The smallest units of USDG that one ETH buys in the pool of USDG: the square of the root of its
+ * price, which gives USDG for each wei, times the wei of one ETH.
+ */
+export function ethUsdMicros(market: TokenMarket): bigint {
+  return (WEI_PER_ETH * market.ethSqrtPriceX96 * market.ethSqrtPriceX96) / (Q96 * Q96);
 }
 
 /** The THKR on the side of its pool at the price of now, in its smallest unit. */

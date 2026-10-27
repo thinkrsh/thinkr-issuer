@@ -6,6 +6,8 @@ const LAPTOP = {
   VOUCHER_KEY_FILE: '../../secret/voucher-dev.pem',
   HOLDER_KEYS_DIR: '../../secret/holder-keys-dev',
   DATABASE_FILE: '.data/ledger.db',
+  CLAIM_FACTORY: '0xC1a1F0000000000000000000000000000000c1A1',
+  CLAIM_OPERATOR_KEY_FILE: '../../secret/claim-operator-key.txt',
 };
 
 describe('readEnv', () => {
@@ -17,7 +19,13 @@ describe('readEnv', () => {
       databaseFile: '.data/ledger.db',
       testnetPayers: [],
       chainRpcUrl: null,
+      claimFactory: '0xc1a1f0000000000000000000000000000000c1a1',
+      claimOperatorKeyFile: '../../secret/claim-operator-key.txt',
     });
+  });
+
+  it('refuses a factory that is no address', () => {
+    expect(() => readEnv({ ...LAPTOP, CLAIM_FACTORY: '0x123' })).toThrow(/CLAIM_FACTORY/);
   });
 
   it('reads the wallets that may top up on the testnet', () => {
@@ -42,7 +50,9 @@ describe('readEnv', () => {
   });
 
   it('fails loudly and names every missing variable', () => {
-    expect(() => readEnv({})).toThrow(/VOUCHER_KEY_FILE, HOLDER_KEYS_DIR, DATABASE_FILE/);
+    expect(() => readEnv({})).toThrow(
+      /VOUCHER_KEY_FILE, HOLDER_KEYS_DIR, DATABASE_FILE, CLAIM_FACTORY, CLAIM_OPERATOR_KEY_FILE/,
+    );
   });
 
   it('fails when a variable is blank', () => {

@@ -4,7 +4,8 @@
 // has stayed 24 hours, and THKR that leaves stops counting at once. All the parts of one hour share
 // the pool of that hour; past it, every part falls in proportion. A wallet with no claim for 30 days
 // earns nothing until it claims. The count keeps unit-hours of THKR, exact: 24M THKR-hours make one
-// holder voucher, so 700K THKR held 10 days makes 7 holder vouchers, no less.
+// holder voucher, so 700K THKR held 10 days makes 7 holder vouchers, no less. The pool of an hour
+// follows the creator fees of the day before (hold/fee-pool.ts).
 import { HOLD } from '../config/hold.js';
 
 /** One transfer of THKR, in the order of the chain. */
@@ -46,6 +47,8 @@ export interface AccrualInput {
   /** True when the wallet may earn: not excluded, and not a contract. */
   readonly mayEarn: (address: string) => boolean;
   readonly clocks: ReadonlyMap<string, WalletClock>;
+  /** The unit-hours that the pool pays in the hour that ends at `hour`. */
+  readonly hourPool: (hour: number) => bigint;
 }
 
 const DAY_MS = 24 * HOLD.hourMs;
@@ -56,14 +59,6 @@ const MINIMUM_UNITS = BigInt(HOLD.minimumThkr) * UNITS_PER_THKR;
 
 /** The unit-hours of THKR that make one holder voucher: 1M THKR held for 24 hours. */
 export const UNIT_HOURS_PER_VOUCHER = BigInt(HOLD.thkrPerVoucher) * UNITS_PER_THKR * HOURS_PER_DAY;
-
-/**
- * The unit-hours that the pool pays in one hour: its holder vouchers of a day, spread over 24
- * hours. $250 a day at $0.40 a voucher is the hold of 625M THKR at the full rate.
- */
-export const HOUR_POOL_UNITS =
-  (BigInt(Math.round(HOLD.dailyPoolUsd / HOLD.voucherUsd)) * UNIT_HOURS_PER_VOUCHER) /
-  HOURS_PER_DAY;
 
 /** The tops of the hours after `after` up to `until`, the first no earlier than the start. */
 export function hoursToCount(after: number | null, until: number): number[] {
@@ -123,7 +118,7 @@ export function planAccruals(input: AccrualInput): HourAccrual[] {
       const units = hourUnitsOf(balance);
       if (units > 0n) raw.set(address, units);
     }
-    const accrual = shareThePool(hour, raw);
+    const accrual = shareThePool(hour, raw, input.hourPool(hour));
     for (const address of accrual.credits.keys()) {
       const clock = clocks.get(address);
       if ((clock?.firstEarnedAt ?? null) === null) {
@@ -184,12 +179,16 @@ function apply(balances: Map<string, bigint>, transfer: HoldTransfer): void {
 }
 
 /** Every part of the hour, each lowered in the same proportion when they pass the pool. */
-function shareThePool(hour: number, raw: ReadonlyMap<string, bigint>): HourAccrual {
+function shareThePool(
+  hour: number,
+  raw: ReadonlyMap<string, bigint>,
+  poolUnits: bigint,
+): HourAccrual {
   const rawUnits = [...raw.values()].reduce((sum, units) => sum + units, 0n);
   const credits = new Map<string, bigint>();
   let paidUnits = 0n;
   for (const [address, units] of raw) {
-    const share = rawUnits > HOUR_POOL_UNITS ? (units * HOUR_POOL_UNITS) / rawUnits : units;
+    const share = rawUnits > poolUnits ? (units * poolUnits) / rawUnits : units;
     if (share === 0n) continue;
     credits.set(address, share);
     paidUnits += share;

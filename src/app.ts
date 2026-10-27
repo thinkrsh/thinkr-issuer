@@ -14,6 +14,7 @@ import type { HolderKeys } from './credit/holder-keys.js';
 import type { Ledger } from './credit/ledger.js';
 import type { VoucherKey } from './credit/voucher-key.js';
 import type { HoldStore } from './hold/store.js';
+import type { ClaimDeposits } from './hold/claim-deposits.js';
 import { IssuerError, errorBody } from './lib/errors.js';
 import { formatRequestLog, type LogLine } from './lib/log.js';
 import { createFixedWindowLimiter } from './lib/rate-limit.js';
@@ -36,6 +37,8 @@ export interface AppDeps {
   readonly holdStore: HoldStore;
   /** Sign the holder vouchers, one key for each month (decision 189). */
   readonly holderKeys: HolderKeys;
+  /** The factory of the deposit addresses of claims by transfer, and its claim wallet. */
+  readonly claimDeposits: ClaimDeposits;
   /** Payment in THKR; unset, TOKEN_PAYMENT of config/token.ts. Tests name a wallet of their own. */
   readonly tokenPayment?: TokenPaymentConfig;
 }

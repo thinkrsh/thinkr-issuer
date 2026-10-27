@@ -1,5 +1,5 @@
 // Shared helpers for the issuer tests: a test app with a fake chain behind its fetch.
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 
 import { vi } from 'vitest';
 
@@ -7,7 +7,9 @@ import { createApp } from '../src/app.js';
 import { VOUCHER_SIGNATURE } from '../src/config/credit.js';
 import type { TokenPaymentConfig } from '../src/config/token.js';
 import type { Ledger } from '../src/credit/ledger.js';
+import type { ClaimDeposits } from '../src/hold/claim-deposits.js';
 import type { HoldStore } from '../src/hold/store.js';
+import { CLAIM_BURN } from '../src/hold/transfer-claims.js';
 import { openHoldStore } from '../src/node/hold-store.js';
 import { openLedger } from '../src/node/ledger.js';
 import type { HolderKeys } from '../src/credit/holder-keys.js';
@@ -40,6 +42,52 @@ export const TEST_HOLDER_KEYS: HolderKeys = new Map([
 
 export type FetchMock = ReturnType<typeof vi.fn<typeof fetch>>;
 
+/**
+ * The factory of deposit addresses of the tests: it names each deposit from the wallet and the id
+ * of its claim, and keeps what the claim wallet did. `burned` is what the next settle reports: the
+ * burn of a claim, less when the wallet took its THKR back first, or null for a deposit settled
+ * before.
+ */
+export interface FakeClaimDeposits extends ClaimDeposits {
+  readonly named: { readonly wallet: string; readonly claimId: string }[];
+  readonly settles: { readonly wallet: string; readonly claimId: string }[];
+  readonly refunds: { readonly wallet: string; readonly claimId: string }[];
+  burned: bigint | null;
+  /** Set, the factory cannot be reached. */
+  down: Error | null;
+}
+
+export function fakeClaimDeposits(): FakeClaimDeposits {
+  const fake: FakeClaimDeposits = {
+    named: [],
+    settles: [],
+    refunds: [],
+    burned: CLAIM_BURN,
+    down: null,
+    depositAddress: (wallet, claimId) => {
+      if (fake.down !== null) return Promise.reject(fake.down);
+      fake.named.push({ wallet, claimId });
+      return Promise.resolve(depositOf(wallet, claimId));
+    },
+    settle: (wallet, claimId) => {
+      if (fake.down !== null) return Promise.reject(fake.down);
+      fake.settles.push({ wallet, claimId });
+      return Promise.resolve(fake.burned);
+    },
+    refund: (wallet, claimId) => {
+      if (fake.down !== null) return Promise.reject(fake.down);
+      fake.refunds.push({ wallet, claimId });
+      return Promise.resolve();
+    },
+  };
+  return fake;
+}
+
+/** The deposit address that the fake factory names for a claim of a wallet. */
+export function depositOf(wallet: string, claimId: string): string {
+  return `0x${createHash('sha256').update(`${wallet}:${claimId}`).digest('hex').slice(0, 40)}`;
+}
+
 export interface TestApp {
   readonly app: ReturnType<typeof createApp>;
   readonly fetchMock: FetchMock;
@@ -48,6 +96,7 @@ export interface TestApp {
   readonly ledger: Ledger;
   /** The store of the hold of this app, in memory. */
   readonly holdStore: HoldStore;
+  readonly claimDeposits: FakeClaimDeposits;
 }
 
 export interface TestAppOptions {
@@ -58,6 +107,8 @@ export interface TestAppOptions {
   readonly tokenPayment?: TokenPaymentConfig;
   /** The store of the hold; unset, a new one in memory. */
   readonly holdStore?: HoldStore;
+  /** The factory of deposit addresses; unset, a new fake one. */
+  readonly claimDeposits?: FakeClaimDeposits;
 }
 
 export function createTestApp(
@@ -67,6 +118,7 @@ export function createTestApp(
   const logs: string[] = [];
   const ledger = openLedger(':memory:');
   const holdStore = options.holdStore ?? openHoldStore(':memory:');
+  const claimDeposits = options.claimDeposits ?? fakeClaimDeposits();
   const app = createApp({
     env: {
       clientAddressHeader: null,
@@ -75,11 +127,14 @@ export function createTestApp(
       databaseFile: ':memory:',
       testnetPayers: [],
       chainRpcUrl: options.chainRpcUrl ?? null,
+      claimFactory: '0x00000000000000000000000000000000000c1a1f',
+      claimOperatorKeyFile: 'unused-in-tests.txt',
     },
     ledger,
     voucherKey: TEST_VOUCHER_KEY,
     holdStore,
     holderKeys: TEST_HOLDER_KEYS,
+    claimDeposits,
     fetch: fetchMock,
     now: options.now ?? (() => Date.now()),
     clientKey: (c) => c.req.header('x-test-visitor') ?? TEST_CLIENT,
@@ -88,7 +143,7 @@ export function createTestApp(
     },
     ...(options.tokenPayment === undefined ? {} : { tokenPayment: options.tokenPayment }),
   });
-  return { app, fetchMock, logs, ledger, holdStore };
+  return { app, fetchMock, logs, ledger, holdStore, claimDeposits };
 }
 
 /** The method and the parameters of a call to the RPC of the chain. */

@@ -14,6 +14,7 @@ import { startTokenPriceSampler } from './credit/token-price.js';
 import { startHoldSync } from './hold/sync.js';
 import { IssuerError } from './lib/errors.js';
 import { writeLogLine } from './lib/log.js';
+import { claimDepositsOnChain, operatorKeyFrom } from './node/claim-deposits.js';
 import { openHoldStore } from './node/hold-store.js';
 import { holderKeysFromDir } from './node/holder-keys.js';
 import { openLedger } from './node/ledger.js';
@@ -24,6 +25,11 @@ const voucherKey = voucherKeyFromPem(readFileSync(env.voucherKeyFile, 'utf8'));
 const ledger = openLedger(env.databaseFile);
 const holdStore = openHoldStore(env.databaseFile);
 const holderKeys = holderKeysFromDir(env.holderKeysDir);
+const claimDeposits = claimDepositsOnChain({
+  rpcUrl: env.chainRpcUrl,
+  factory: env.claimFactory,
+  operatorKey: operatorKeyFrom(readFileSync(env.claimOperatorKeyFile, 'utf8')),
+});
 
 /** A secret of this process: the keys of visitors cannot be traced back to their addresses. */
 const VISITOR_KEY_SECRET = randomBytes(SERVER.visitorKeySecretBytes);
@@ -56,6 +62,7 @@ const app = createApp({
   voucherKey,
   holdStore,
   holderKeys,
+  claimDeposits,
 });
 
 const server = serve({ fetch: app.fetch, hostname: SERVER.host, port: SERVER.port }, (info) => {
@@ -80,6 +87,7 @@ const stopHold = startHoldSync({
   rpcUrl: env.chainRpcUrl,
   store: holdStore,
   holderKeys,
+  claimDeposits,
   now: () => Date.now(),
   log: writeLogLine,
 });

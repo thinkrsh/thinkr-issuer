@@ -65,8 +65,14 @@ export const MESSAGES = {
       ? 'The vouchers of this ticket were all fetched.'
       : `This ticket has ${String(left)} ${left === 1 ? 'voucher' : 'vouchers'} left to fetch.`,
   claimsOpen:
-    'This wallet has too many claims by transfer open. Send the amount of one of them, or wait an hour.',
+    'This wallet has too many claims by transfer open. Send THKR to one of them, or wait an hour.',
   transferClaimUnknown: 'This claim by transfer does not exist. Start the claim again.',
+  /** A transaction of the claim wallet that the chain took but reverted. */
+  claimWalletReverted: 'The chain reverted the transaction of the claim wallet.',
+  claimWalletNoEvent: 'The chain settled a deposit without the event of its settle.',
+  /** The line of the log when the claim wallet could not settle or refund a deposit. */
+  claimWalletFailed: (reason: string): string =>
+    `The claim wallet could not settle or refund a deposit: ${reason}`,
   /** The text that a wallet signs to claim its holder vouchers. It costs no gas. */
   holdClaimMessage: (vouchers: number, wallet: string, ticket: string): string =>
     [

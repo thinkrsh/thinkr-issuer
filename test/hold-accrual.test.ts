@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import { HOLD } from '../src/config/hold.js';
 import {
-  HOUR_POOL_UNITS,
   UNIT_HOURS_PER_VOUCHER,
   hoursToCount,
   planAccruals,
@@ -19,6 +18,10 @@ const ALICE = '0x00000000000000000000000000000000000a11ce';
 const BOB = '0x0000000000000000000000000000000000000b0b';
 /** The first hour that the count takes: 07:00 UTC on 24 Oct 2026. */
 const FIRST_HOUR = Date.UTC(2026, 9, 24, 7);
+
+/** A pool of 625 holder vouchers a day ($250 at $0.40), a 24th of it in each hour: 625M THKR. */
+const HOUR_POOL_UNITS = 625_000_000n * THKR;
+const hourPool = (): bigint => HOUR_POOL_UNITS;
 
 let logIndex = 0;
 
@@ -47,7 +50,7 @@ function earned(
   mayEarn: (address: string) => boolean = (address) => address !== MINT,
 ): Map<string, bigint> {
   const totals = new Map<string, bigint>();
-  for (const accrual of planAccruals({ transfers, hours, mayEarn, clocks })) {
+  for (const accrual of planAccruals({ transfers, hours, mayEarn, clocks, hourPool })) {
     for (const [address, units] of accrual.credits) {
       totals.set(address, (totals.get(address) ?? 0n) + units);
     }
@@ -98,6 +101,7 @@ describe('planAccruals', () => {
       hours: hoursFrom(FIRST_HOUR, 30),
       mayEarn: () => true,
       clocks: new Map(),
+      hourPool,
     });
     const earning = accruals.filter((accrual) => accrual.credits.has(ALICE)).map((a) => a.hour);
     expect(earning[0]).toBe(FIRST_HOUR + 28 * HOUR);
@@ -111,6 +115,7 @@ describe('planAccruals', () => {
       hours: hoursFrom(FIRST_HOUR, 12),
       mayEarn: (address) => address !== MINT,
       clocks: new Map(),
+      hourPool,
     });
     expect(accruals.filter((a) => a.credits.has(ALICE)).map((a) => a.hour)).toEqual(
       hoursFrom(FIRST_HOUR, 6),
@@ -131,6 +136,7 @@ describe('planAccruals', () => {
       hours: [FIRST_HOUR + 2 * HOUR],
       mayEarn: (address) => address !== MINT,
       clocks: new Map(),
+      hourPool,
     });
     expect(accruals[0]?.credits.get(ALICE)).toBe(100_000n * THKR);
   });
@@ -142,6 +148,7 @@ describe('planAccruals', () => {
       hours: [FIRST_HOUR],
       mayEarn: (address) => address !== MINT,
       clocks: new Map(),
+      hourPool,
     });
     expect(accrual?.rawUnits).toBe(900_000_000n * THKR);
     const alice = accrual?.credits.get(ALICE) ?? 0n;
@@ -151,13 +158,13 @@ describe('planAccruals', () => {
     expect(accrual?.paidUnits).toBeLessThanOrEqual(HOUR_POOL_UNITS);
   });
 
-  it('pays the full rate while the hold stays under 625M THKR, the pool of $250 a day', () => {
-    expect(HOUR_POOL_UNITS).toBe(625_000_000n * THKR);
+  it('pays the full rate while the hold stays under the pool of the hour', () => {
     const [accrual] = planAccruals({
       transfers: [heldSince(ALICE, 600_000_000n)],
       hours: [FIRST_HOUR],
       mayEarn: (address) => address !== MINT,
       clocks: new Map(),
+      hourPool,
     });
     expect(accrual?.paidUnits).toBe(accrual?.rawUnits);
   });
@@ -179,6 +186,7 @@ describe('planAccruals', () => {
       hours,
       mayEarn: (address) => address !== MINT,
       clocks: new Map(),
+      hourPool,
     });
     const earning = accruals.filter((a) => a.credits.has(ALICE)).map((a) => a.hour);
     expect(earning.at(-1)).toBe(FIRST_HOUR + 30 * DAY - HOUR);
@@ -194,6 +202,7 @@ describe('planAccruals', () => {
       hours: hoursFrom(FIRST_HOUR, 48),
       mayEarn: (address) => address !== MINT,
       clocks,
+      hourPool,
     });
     expect(accruals.filter((a) => a.credits.has(ALICE))).toHaveLength(24);
   });

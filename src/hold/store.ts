@@ -1,11 +1,12 @@
 // What the issuer keeps for the hold of THKR: every transfer of THKR, how far the count read the
-// chain, the kind of each wallet, what each wallet earned and claimed, the total of each hour, and
-// the ticket of each claim, with the amount that names each claim by transfer. A ticket names the
+// chain, the creator fees and the pool of each day that they fixed, the kind of each wallet, what each wallet earned and claimed, the total of each hour, and
+// the ticket of each claim, with the deposit address of each claim by transfer. A ticket names the
 // hash of the blinded vouchers it gave, never a voucher, so a claim does not link to the chats that
 // its credit pays for.
 // The chain shows the transfers to anyone; what a wallet earned follows from them. The Node entry
 // keeps it in the SQLite file of the ledger (node/hold-store.ts).
 import type { HoldTransfer, HourAccrual, WalletClock } from './accrual.js';
+import type { CreatorFee, DayPool } from './fee-pool.js';
 import type { WalletKind } from './transfers.js';
 
 /** How far the count went: the last block read, its time, and the last hour counted. */
@@ -13,6 +14,18 @@ export interface HoldCursor {
   readonly block: number | null;
   readonly indexedAt: number | null;
   readonly hour: number | null;
+}
+
+/** What the hours counted so far took: the start of the count and the version of its rules. */
+export interface CountKey {
+  readonly startAt: number;
+  readonly version: number;
+}
+
+/** How far the reading of creator fees went: the last block read and its time. */
+export interface FeeCursor {
+  readonly block: number | null;
+  readonly indexedAt: number | null;
 }
 
 /** What the issuer knows of one wallet. */
@@ -68,15 +81,23 @@ export type ClaimResult =
 export type RedeemOutcome = 'redeemed' | 'same' | 'other' | 'expired' | 'unknown';
 
 /**
- * A claim by transfer (25 Oct 2026): the wallet names its claim by sending `amount` of THKR to the
- * burn address before `expiresAt`, and the count then fills the ticket.
+ * A claim by transfer (25 Oct 2026): the wallet names its claim by sending at least `amount` of THKR
+ * to the deposit address of the claim before `expiresAt` (27 Oct 2026), and the count then has the
+ * claim wallet settle the deposit and fills the ticket. A claim from before named the burn address
+ * and an exact amount.
  */
 export interface TransferClaim {
   /** The SHA-256 of the secret of the ticket, in hex. */
   readonly ticketHash: string;
   readonly wallet: string;
-  /** In the smallest unit of THKR. */
+  /** In the smallest unit of THKR: the least to send, which the claim burns. */
   readonly amount: bigint;
+  /** The id of the claim at the factory of deposit addresses, as 0x hex; null for the burn address. */
+  readonly claimId: string | null;
+  /** The deposit address of the claim, in lower case; null for a claim of the burn address. */
+  readonly deposit: string | null;
+  /** When the claim wallet last settled or refunded the deposit, or null before it did. */
+  readonly releasedAt: number | null;
   readonly createdAt: number;
   readonly expiresAt: number;
   /** The transfer that named it, or null while it waits. */
@@ -96,8 +117,11 @@ export interface OpenTransferClaimInput {
   readonly maxOpen: number;
   /** The holder vouchers to claim, or null for all that the wallet can claim when it pays. */
   readonly wanted: number | null;
-  /** Picks the amount, given the amounts of the open claims of the wallet. */
-  readonly pickAmount: (taken: ReadonlySet<bigint>) => bigint;
+  /** The least THKR to send, which the claim burns, in the smallest unit. */
+  readonly amount: bigint;
+  /** The id of the claim at the factory, and the deposit address that the factory names for it. */
+  readonly claimId: string;
+  readonly deposit: string;
 }
 
 /** What opening a claim by transfer did: a new claim, the same claim again, or why it did not. */
@@ -134,18 +158,30 @@ export interface HoldStore {
   addTransfers: (transfers: readonly HoldTransfer[], block: number, at: number) => void;
   /** Every transfer kept, in the order of the chain. */
   transfers: () => HoldTransfer[];
+  /** The transfers kept from or to `address`, in the order of the chain. */
+  transfersOf: (address: string) => HoldTransfer[];
+  feeCursor: () => FeeCursor;
+  /** Keeps the creator fees read up to `block`, whose time is `at`, and moves its cursor, in one step. */
+  addCreatorFees: (fees: readonly CreatorFee[], block: number, at: number) => void;
+  /** The creator fees kept whose time is from `from` to before `to`, in wei. */
+  creatorFeesBetween: (from: number, to: number) => bigint;
+  /** The pool of each day fixed so far, by 00:00 UTC of its day. */
+  dayPools: () => Map<number, DayPool>;
+  /** Keeps the pool of a day; a day whose pool is fixed keeps the first. */
+  setDayPool: (pool: DayPool) => void;
   /** The wallets of the transfers whose kind is unknown, or was read before `before`. */
   walletsToCheck: (before: number) => string[];
   setKinds: (kinds: ReadonlyMap<string, WalletKind>, at: number) => void;
   kinds: () => Map<string, WalletKind>;
   clocks: () => Map<string, WalletClock>;
-  /** The start that the hours counted so far took, or null before the first count. */
-  countStart: () => number | null;
+  /** The start and the rules that the hours counted so far took, or null before the first count. */
+  countKey: () => CountKey | null;
   /**
    * Forgets what the wallets earned and every hour counted, in one step, so that the count starts
-   * again at `startAt`. Claims, tickets, transfers, and the kinds of wallets stay.
+   * again under `key`. Claims, tickets, transfers, creator fees, the pools of days, and the kinds
+   * of wallets stay.
    */
-  restartCount: (startAt: number) => void;
+  restartCount: (key: CountKey) => void;
   /** Adds what each wallet earned in these hours, and moves the cursor to the last, in one step. */
   addHours: (accruals: readonly HourAccrual[]) => void;
   wallet: (address: string) => HoldWallet | null;
@@ -162,18 +198,24 @@ export interface HoldStore {
   /** Gives the vouchers of every ticket that ended unfetched back to its wallet. */
   releaseExpired: (at: number) => number;
   /**
-   * Opens a claim by transfer for a ticket that no claim took, with an amount that no open claim
-   * of the wallet has. The same wallet and ticket again give the same claim.
+   * Opens a claim by transfer for a ticket that no claim took, while the wallet has fewer claims
+   * open than allowed. The same wallet and ticket again give the same claim.
    */
   openTransferClaim: (input: OpenTransferClaimInput) => OpenTransferClaimResult;
   transferClaim: (ticketHash: string) => TransferClaim | null;
   /** The claims by transfer that wait, whose time ends at `since` or later. */
   waitingTransferClaims: (since: number) => TransferClaim[];
   /**
-   * The first transfer kept that names a claim: its amount, from its wallet to `to`, in a block of
-   * its time, and named by no other claim. Null while none is kept.
+   * The first transfer kept that names a claim of the burn address: its amount, from its wallet to
+   * `to`, in a block of its time, and named by no other claim. Null while none is kept.
    */
   transferNaming: (claim: TransferClaim, to: string) => string | null;
+  /** Ends a waiting claim with no holder voucher, naming the transfer that it came with. */
+  closeTransferClaim: (ticketHash: string, txHash: string) => TransferClaim | null;
+  /** The claims whose deposit received THKR after the claim wallet last released it. */
+  depositsToRelease: () => TransferClaim[];
+  /** Notes that the claim wallet settled or refunded the deposit of a claim at `at`. */
+  markReleased: (ticketHash: string, at: number) => void;
   /**
    * Fills the ticket of a waiting claim with the whole holder vouchers that it asked for, or with
    * every one that its wallet can claim, never more than the wallet can claim nor `maxVouchers`,

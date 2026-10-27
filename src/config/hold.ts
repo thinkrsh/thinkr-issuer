@@ -1,7 +1,7 @@
 // The hold of THKR (decisions 188 to 191 and 201, and the owner's answers of 24 Oct 2026): a wallet
 // that holds THKR earns holder vouchers each day, with no stake, no lock, and no contract. The
 // issuer reads every transfer of THKR on the chain and counts each wallet by the hour. The site
-// tells the same rules from apps/site/src/config/token.ts (`hold`), and the numbers must match.
+// tells the same rules from apps/site-v2/src/config/token.ts (`hold`), and the numbers must match.
 import { PAYMENTS } from './payments.js';
 import { TOKEN_PAYMENT, TOKEN_PRICE, TOKEN_TREASURY } from './token.js';
 
@@ -18,6 +18,12 @@ export const HOLD = {
    * count every hour again from the new start (hold/sync.ts), and keeps every claim.
    */
   startAt: Date.UTC(2026, 9, 22, 17, 2, 19),
+  /**
+   * The version of the rules of the count. A change here makes the issuer count every hour again
+   * from the start (hold/sync.ts), and keeps every claim. 2 since 27 Oct 2026, when the pool of every
+   * day from the launch became a share of the creator fees ("hitung ulang aja"); 1 had $250 a day.
+   */
+  countVersion: 2,
   /** One holder voucher a day for each 1M THKR ("sehari sehari", decision 189). */
   thkrPerVoucher: 1_000_000,
   /** The least THKR that earns ("ya 100K dulu nanti bisa berubah", decision 189). */
@@ -29,10 +35,35 @@ export const HOLD = {
   /** A wallet stops earning after this many days without a claim, until it claims (decision 201). */
   maxUnclaimedDays: 30,
   /**
-   * All holder vouchers share this much credit a day; past it, every share of an hour falls in
-   * proportion. $250 since 24 Oct 2026 ("iya naikin aja"): 625 holder vouchers a day.
+   * The pool of each day since the launch (the owner, 27 Oct 2026: "kalo bisa 15% dari creator fee
+   * ... agar tidak lebih dari 15%", "15% juga diitung dari hari kemarin nya", "Gas", then "hitung
+   * ulang aja" for the days before 28 Oct): 15% of the creator fees of THKR that Pons V2 credited to
+   * its creator in the UTC day before, in dollars at the price of ETH when the issuer first reads
+   * that whole day. All holder vouchers of an hour share a 24th of it; past it, every share falls in
+   * proportion, and no wallet earns more than the full rate. From 24 to 27 Oct 2026 it was $250 a
+   * day ("iya naikin aja").
    */
-  dailyPoolUsd: 250,
+  feePool: {
+    /** The share of the creator fees of the day before, in basis points. */
+    shareBps: 1_500,
+    /**
+     * The fee vault of Pons V2: it keeps each fee in ETH for its recipient until the recipient
+     * withdraws it. Read on the chain on 27 Oct 2026: the creator of THKR was credited 3.239 ETH
+     * from the launch to 14:28 UTC, 0.894 ETH by the curve and 2.345 ETH by the hook.
+     */
+    vault: '0xd3afeb2a57f70ef218aa82451c51b2fb0416ac9e',
+    /** The event of a credit in the vault: the recipient and the payer as topics, wei as data. */
+    creditTopic: '0x4e45da441832cf53bdaa69235704fc0575e68210f459ee1562911024b12967d5',
+    /** The deployer of THKR, who receives its creator fees (named by the owner, 27 Oct 2026). */
+    creator: '0xadaeabede59a8e34f347d36c3f17ee6e92dc3811',
+    /**
+     * The payers of the fees of THKR: its curve until it graduated, then the hook of its pool of
+     * Uniswap v4, which sells the fees it takes in THKR for ETH a few times an hour. The hook serves
+     * every token of Pons V2 that graduated, so a second token of the same creator would add to the
+     * count.
+     */
+    payers: [TOKEN_PRICE.curve, '0xe5e702641ea86f4ae6cc3cdaed2b886f976be044'],
+  },
   /** What a holder voucher starts at, in dollars of credit (decision 189). */
   voucherUsd: 0.4,
   /**
@@ -94,18 +125,32 @@ export const HOLD = {
    * claim once it reads that transfer on the chain.
    */
   transferClaim: {
-    /** Where the transfer goes, so that the THKR of a claim leaves the supply. */
-    to: TOKEN_TREASURY.burnAddress.toLowerCase(),
     /**
-     * The amount is a whole number of THKR in this range, drawn at random and never the same for
-     * two open claims of one wallet: at most about $0.25 (1M THKR was about $24.78 on 24 Oct 2026).
+     * What one claim burns, and so the least THKR that its wallet sends to the deposit address of
+     * the claim (27 Oct 2026: "kalo salah jumlah bisa kita refund"); the rest goes back to the
+     * wallet. Must match `burnAmount` of the factory of apps/contracts. About $0.025: 1M THKR
+     * was about $24.78 on 24 Oct 2026.
      */
-    minThkr: 1_000,
-    maxThkr: 9_999,
-    /** How long the amount names the claim: a transfer in a later block names nothing. */
+    burnThkr: 1_000,
+    /**
+     * THKR at a deposit under this amount waits for its wallet to send it back itself: below it, a
+     * refund costs Thinkr more gas than it returns, and dust could drain the claim wallet.
+     */
+    minRefundThkr: 100,
+    /** Bytes of the id of a claim at the factory, drawn at random: the salt of its deposit address. */
+    claimIdBytes: 32,
+    /**
+     * The claims of 25 to 27 Oct 2026 named the burn address and an exact amount. Those still open
+     * at the switch to deposit addresses keep that way until they end.
+     * TODO(claim-deposits, 2026-10-29): drop once no claim of the burn address can settle.
+     */
+    legacyTo: TOKEN_TREASURY.burnAddress.toLowerCase(),
+    /** How long the deposit address names the claim: THKR that comes later goes back. */
     ttlMs: 60 * 60_000,
     /** The most claims by transfer that one wallet has open at a time. */
     maxOpenPerWallet: 10,
+    /** How long the claim wallet waits for a block to take a settle or a refund. */
+    txTimeoutMs: 60_000,
     /** How often the count reads the chain while a claim by transfer waits. */
     syncEveryMs: 20_000,
     /**

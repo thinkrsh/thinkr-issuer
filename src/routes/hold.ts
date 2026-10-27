@@ -3,7 +3,8 @@
 // POST /api/issuer/hold/quote gives the text that the wallet signs to claim; and
 // POST /api/issuer/hold/claims takes the signed claim into a ticket that the chat app made; and
 // POST /api/issuer/hold/transfer-claims and GET /api/issuer/hold/transfer-claims/<hash> give a
-// wallet that signs no message an amount of THKR to send instead, and whether its transfer came.
+// wallet that signs no message the deposit address of its claim to send THKR to instead, and whether
+// its transfer came.
 // For the chat app at chat.thinkr.sh, which knows the secret of the ticket and no wallet:
 // GET /api/issuer/hold/tickets/<hash> gives what the ticket holds and the key of its month, and
 // POST /api/issuer/hold/tickets/redeem answers its blinded vouchers with blind signatures.
@@ -31,9 +32,11 @@ import { holderKeyAt, type HolderKeys } from '../credit/holder-keys.js';
 import { assertSignedBy, requestHash } from '../credit/payment.js';
 import type { VoucherKey } from '../credit/voucher-key.js';
 import { vouchersOf } from '../hold/accrual.js';
+import { dayOfHour, dayPoolUsd } from '../hold/fee-pool.js';
 import { walletStatus } from '../hold/status.js';
 import type { HoldStore, HoldTicket } from '../hold/store.js';
-import { pickTransferAmount, transferClaimResponse } from '../hold/transfer-claims.js';
+import { newClaimId, type ClaimDeposits } from '../hold/claim-deposits.js';
+import { CLAIM_BURN, transferClaimResponse } from '../hold/transfer-claims.js';
 import { parseBody, readJson } from '../lib/body.js';
 import { fromBase64Url, sha256, toBase64Url, toHex } from '../lib/bytes.js';
 import { IssuerError } from '../lib/errors.js';
@@ -45,6 +48,8 @@ export interface HoldRouteDeps {
   readonly limiter: RateLimiter;
   readonly holdStore: HoldStore;
   readonly holderKeys: HolderKeys;
+  /** Names the deposit address of each new claim by transfer. */
+  readonly claimDeposits: ClaimDeposits;
 }
 
 const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
@@ -103,12 +108,19 @@ export function createHoldRoute(deps: HoldRouteDeps): Hono {
       const wallet = request.wallet.toLowerCase();
       const store = deps.holdStore;
       const existing = store.transferClaim(request.ticket);
-      if (existing === null) {
-        const claimable = walletStatus(store, wallet).claimable;
-        if (claimable < (request.vouchers ?? 1)) {
-          throw new IssuerError('claim_too_large', MESSAGES.claimTooLarge(claimable));
-        }
+      // The same ticket again answers with its claim, with no call to the chain.
+      if (existing !== null) {
+        if (existing.wallet !== wallet) throw new IssuerError('ticket_used', MESSAGES.ticketTaken);
+        return c.json<HoldTransferClaimResponse>(
+          transferClaimResponse(existing, store.cursor().indexedAt),
+        );
       }
+      const claimable = walletStatus(store, wallet).claimable;
+      if (claimable < (request.vouchers ?? 1)) {
+        throw new IssuerError('claim_too_large', MESSAGES.claimTooLarge(claimable));
+      }
+      const claimId = newClaimId(HOLD.transferClaim.claimIdBytes);
+      const deposit = await deps.claimDeposits.depositAddress(wallet, claimId);
       const at = deps.now();
       const result = store.openTransferClaim({
         wallet,
@@ -117,7 +129,9 @@ export function createHoldRoute(deps: HoldRouteDeps): Hono {
         expiresAt: at + HOLD.transferClaim.ttlMs,
         maxOpen: HOLD.transferClaim.maxOpenPerWallet,
         wanted: request.vouchers ?? null,
-        pickAmount: (taken) => pickTransferAmount(taken),
+        amount: CLAIM_BURN,
+        claimId,
+        deposit,
       });
       if (result.outcome === 'ticket_taken') {
         throw new IssuerError('ticket_used', MESSAGES.ticketTaken);
@@ -177,16 +191,22 @@ export function createHoldRoute(deps: HoldRouteDeps): Hono {
     .get('/totals', (c) => {
       takeRequest(deps, c);
       const totals = deps.holdStore.totals();
+      const countedUntil = deps.holdStore.cursor().hour;
       return c.json<HoldTotalsResponse>({
         earned: vouchersOf(totals.earnedUnits),
         issued: totals.issued,
         pending: totals.pending,
         earning: totals.earning,
-        dailyPoolUsd: HOLD.dailyPoolUsd,
+        dailyPoolUsd: poolOfCount(deps.holdStore, countedUntil),
         voucherUsd: HOLD.voucherUsd,
-        countedUntil: deps.holdStore.cursor().hour,
+        countedUntil,
       });
     });
+}
+
+/** The pool of the day of the last hour counted, in dollars, or null before the first count. */
+function poolOfCount(store: HoldStore, countedUntil: number | null): number | null {
+  return countedUntil === null ? null : dayPoolUsd(dayOfHour(countedUntil), store.dayPools());
 }
 
 function takeRequest(deps: HoldRouteDeps, c: Context): void {

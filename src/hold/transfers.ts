@@ -86,7 +86,7 @@ export async function readTransfers(
 }
 
 /** The time of each block, in milliseconds since 1970, in the order of `blocks`. */
-async function blockTimes(deps: ChainDeps, blocks: readonly number[]): Promise<number[]> {
+export async function blockTimes(deps: ChainDeps, blocks: readonly number[]): Promise<number[]> {
   const times: number[] = [];
   for (let start = 0; start < blocks.length; start += HOLD.batchCalls) {
     if (start > 0) await wait(HOLD.batchPauseMs);
@@ -133,6 +133,6 @@ export function kindOf(code: string): WalletKind {
   return lower === '0x' || lower.startsWith(DELEGATION_PREFIX) ? 'account' : 'contract';
 }
 
-function hex(block: number): string {
+export function hex(block: number): string {
   return `0x${block.toString(16)}`;
 }
