@@ -31,6 +31,7 @@ import {
   type QuoteResponse,
   type TicketClaimResponse,
   type TokenPaymentsResponse,
+  type TopUpPaymentsResponse,
   type TopUpTicketResponse,
 } from '../contract.js';
 import { holderOf } from '../credit/holder-discount.js';
@@ -205,6 +206,10 @@ export function createIssuerRoute(deps: IssuerRouteDeps): Hono {
       return c.json<TokenPaymentsResponse>(
         tokenPaymentsOf(deps.tokenPayment, deps.ledger.tokenPayments()),
       );
+    })
+    .get('/top-ups/payments', (c) => {
+      takeRequest(deps, c);
+      return c.json<TopUpPaymentsResponse>({ payments: deps.ledger.paymentVouchers() });
     });
 }
 

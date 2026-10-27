@@ -25,6 +25,7 @@ import type {
   TransferClaim,
 } from '../hold/store.js';
 import type { WalletKind } from '../hold/transfers.js';
+import { addMissingColumns, type AddedColumn } from './sqlite.js';
 
 const IN_MEMORY = ':memory:';
 const MS_PER_SECOND = 1_000;
@@ -80,7 +81,8 @@ const SCHEMA = `
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     tx_hash TEXT,
-    vouchers INTEGER
+    vouchers INTEGER,
+    wanted INTEGER
   ) STRICT;
   CREATE INDEX IF NOT EXISTS hold_transfer_claims_wallet ON hold_transfer_claims (wallet, amount);
   CREATE TABLE IF NOT EXISTS hold_count (
@@ -90,12 +92,21 @@ const SCHEMA = `
   INSERT OR IGNORE INTO hold_cursor (id) VALUES (1);
 `;
 
+/**
+ * Columns that came after a table: a store from before gets each one at its default. The count of
+ * holder vouchers that a claim by transfer asks for came on 27 Oct 2026; null asks for all.
+ */
+const ADDED_COLUMNS: readonly AddedColumn[] = [
+  { table: 'hold_transfer_claims', column: 'wanted', definition: 'INTEGER' },
+];
+
 /** Opens the store in `file`, or in memory for ':memory:', and makes its tables when missing. */
 export function openHoldStore(file: string): HoldStore {
   if (file !== IN_MEMORY) mkdirSync(dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
   db.exec(SCHEMA);
+  addMissingColumns(db, ADDED_COLUMNS);
 
   const selectCursor = db.prepare('SELECT block, indexed_at, hour FROM hold_cursor WHERE id = 1');
   const insertTransfer = db.prepare(
@@ -177,7 +188,7 @@ export function openHoldStore(file: string): HoldStore {
       'FROM hold_tickets',
   );
   const transferClaimColumns =
-    'ticket_hash, wallet, amount, created_at, expires_at, tx_hash, vouchers';
+    'ticket_hash, wallet, amount, created_at, expires_at, tx_hash, vouchers, wanted';
   const selectTransferClaim = db.prepare(
     `SELECT ${transferClaimColumns} FROM hold_transfer_claims WHERE ticket_hash = ?`,
   );
@@ -186,8 +197,8 @@ export function openHoldStore(file: string): HoldStore {
       'WHERE wallet = ? AND tx_hash IS NULL AND expires_at >= ?',
   );
   const insertTransferClaim = db.prepare(
-    'INSERT INTO hold_transfer_claims (ticket_hash, wallet, amount, created_at, expires_at) ' +
-      'VALUES (?, ?, ?, ?, ?)',
+    'INSERT INTO hold_transfer_claims ' +
+      '(ticket_hash, wallet, amount, created_at, expires_at, wanted) VALUES (?, ?, ?, ?, ?, ?)',
   );
   const selectWaitingClaims = db.prepare(
     `SELECT ${transferClaimColumns} FROM hold_transfer_claims ` +
@@ -279,6 +290,7 @@ export function openHoldStore(file: string): HoldStore {
     expiresAt: integer(row.expires_at),
     txHash: optionalText(row.tx_hash),
     vouchers: optionalInteger(row.vouchers),
+    wanted: optionalInteger(row.wanted),
   });
 
   const transferClaim = (ticketHash: string): TransferClaim | null => {
@@ -424,6 +436,7 @@ export function openHoldStore(file: string): HoldStore {
           amount.toString(),
           input.at,
           input.expiresAt,
+          input.wanted,
         );
         const made = transferClaim(input.ticketHash);
         if (made === null) throw new Error('The claim by transfer was not kept.');
@@ -449,7 +462,11 @@ export function openHoldStore(file: string): HoldStore {
         const found = transferClaim(input.ticketHash);
         if (found?.txHash !== null) return found;
         releaseExpired(input.at);
-        const vouchers = Math.min(claimableOf(found.wallet), input.maxVouchers);
+        const vouchers = Math.min(
+          claimableOf(found.wallet),
+          found.wanted ?? input.maxVouchers,
+          input.maxVouchers,
+        );
         let taken = 0;
         if (vouchers > 0) {
           const result = claimIn({

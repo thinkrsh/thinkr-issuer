@@ -57,6 +57,12 @@ export interface TokenPaymentRecord {
   readonly paidAt: number;
 }
 
+/** A payment that bought vouchers, in USDG or THKR, and how many it bought. */
+export interface PaymentVouchers {
+  readonly txHash: string;
+  readonly vouchers: number;
+}
+
 /** One reading of the price of THKR: what a dollar bought then, in the smallest unit of THKR. */
 export interface PriceSample {
   readonly at: number;
@@ -97,6 +103,8 @@ export interface Ledger {
   redeemTicket: (hash: string, requestHash: string, vouchers: number) => TicketRedemption;
   /** Every payment in THKR, the oldest first. */
   tokenPayments: () => TokenPaymentRecord[];
+  /** Every payment that bought vouchers, in USDG or THKR, the oldest first. */
+  paymentVouchers: () => PaymentVouchers[];
   /** Keeps a reading of the price of THKR, and drops the readings before `dropBefore`. */
   addTokenPrice: (sample: PriceSample, dropBefore: number) => void;
   /** The readings of the price of THKR since `since`, the oldest first. */

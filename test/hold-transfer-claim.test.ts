@@ -41,12 +41,19 @@ function issuerWith(vouchers: number, clock = { now: NOW }): TestApp {
   return createTestApp(undefined, { holdStore, now: () => clock.now });
 }
 
-function open(app: TestApp['app'], ticket: string, wallet = WALLET): Promise<Response> {
+function open(
+  app: TestApp['app'],
+  ticket: string,
+  wallet = WALLET,
+  vouchers?: number,
+): Promise<Response> {
   return Promise.resolve(
     app.request('/api/issuer/hold/transfer-claims', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ wallet, ticket }),
+      body: JSON.stringify(
+        vouchers === undefined ? { wallet, ticket } : { wallet, ticket, vouchers },
+      ),
     }),
   );
 }
@@ -142,6 +149,14 @@ describe('POST /api/issuer/hold/transfer-claims', () => {
     expect(await errorCode(response)).toBe('claim_too_large');
   });
 
+  it('refuses to ask for more holder vouchers than the wallet can claim', async () => {
+    const { app } = issuerWith(2);
+    const response = await open(app, newTicket(), WALLET, 3);
+    expect(response.status).toBe(409);
+    expect(await errorCode(response)).toBe('claim_too_large');
+    expect((await open(app, newTicket(), WALLET, 2)).status).toBe(200);
+  });
+
   it('refuses a ticket that a claim of another wallet took', async () => {
     const { app } = issuerWith(3);
     const ticket = newTicket();
@@ -174,6 +189,21 @@ describe('settleTransferClaims', () => {
       await app.request(`/api/issuer/hold/wallets/${WALLET}`)
     ).json()) as HoldWalletResponse;
     expect(status).toMatchObject({ claimable: 0, claimed: 3, lastClaimAt: NOW + 90_000 });
+  });
+
+  it('fills the ticket with the holder vouchers asked for, and leaves the rest to claim', async () => {
+    const { app, holdStore } = issuerWith(3);
+    const ticket = newTicket();
+    const response = await open(app, ticket, WALLET, 1);
+    expect(response.status).toBe(200);
+    const claim = (await response.json()) as HoldTransferClaimResponse;
+    transfer(holdStore, BigInt(claim.amount), NOW + 60_000);
+    expect(settle(holdStore, NOW + 90_000)).toBe(1);
+    expect(await stateOf(app, ticket)).toMatchObject({ state: 'claimed', vouchers: 1 });
+    const status = (await (
+      await app.request(`/api/issuer/hold/wallets/${WALLET}`)
+    ).json()) as HoldWalletResponse;
+    expect(status).toMatchObject({ claimable: 2, claimed: 1 });
   });
 
   it('takes a transfer in the first second of the claim, since a block keeps whole seconds', async () => {
@@ -221,6 +251,7 @@ describe('settleTransferClaims', () => {
       at: NOW + 30_000,
       expiresAt: NOW + HOLD.transferClaim.ttlMs,
       maxOpen: HOLD.transferClaim.maxOpenPerWallet,
+      wanted: null,
       pickAmount: () => BigInt(claim.amount),
     });
     expect(settle(holdStore, NOW + 120_000)).toBe(0);

@@ -10,12 +10,14 @@ import type {
   Ledger,
   PaymentClaim,
   PaymentTarget,
+  PaymentVouchers,
   PriceSample,
   TicketRedemption,
   TokenPaymentRecord,
   TokenQuote,
   TopUpTicket,
 } from '../credit/ledger.js';
+import { addMissingColumns, type AddedColumn } from './sqlite.js';
 
 const IN_MEMORY = ':memory:';
 
@@ -68,19 +70,9 @@ const SCHEMA = `
  * Columns that came after a table: a ledger from before them gets each one at its default. The
  * holder discount of 26 Oct 2026 added the percent of a quote in THKR.
  */
-const ADDED_COLUMNS: readonly { table: string; column: string; definition: string }[] = [
+const ADDED_COLUMNS: readonly AddedColumn[] = [
   { table: 'token_quotes', column: 'discount_percent', definition: 'INTEGER NOT NULL DEFAULT 0' },
 ];
-
-function addMissingColumns(db: DatabaseSync): void {
-  for (const { table, column, definition } of ADDED_COLUMNS) {
-    const names = db
-      .prepare(`PRAGMA table_info(${table})`)
-      .all()
-      .map((row) => row.name);
-    if (!names.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-  }
-}
 
 /** Opens the ledger in `file`, or in memory for ':memory:', and makes its tables when missing. */
 export function openLedger(file: string): Ledger {
@@ -88,12 +80,13 @@ export function openLedger(file: string): Ledger {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
   db.exec(SCHEMA);
-  addMissingColumns(db);
+  addMissingColumns(db, ADDED_COLUMNS);
 
   const selectPayment = db.prepare('SELECT request_hash FROM payments WHERE tx_hash = ?');
   const insertPayment = db.prepare(
     'INSERT OR IGNORE INTO payments (tx_hash, request_hash, vouchers) VALUES (?, ?, ?)',
   );
+  const selectPayments = db.prepare('SELECT tx_hash, vouchers FROM payments ORDER BY rowid');
   const quoteTable = (table: 'token_quotes' | 'usdg_quotes') => ({
     upsert: db.prepare(
       `INSERT INTO ${table} (request_hash, amount, vouchers, expires_at, discount_percent) ` +
@@ -252,6 +245,12 @@ export function openLedger(file: string): Ledger {
         vouchers: integer(row.vouchers),
         usdMicros: integer(row.usd_micros),
         paidAt: integer(row.paid_at),
+      }));
+    },
+    paymentVouchers(): PaymentVouchers[] {
+      return selectPayments.all().map((row) => ({
+        txHash: text(row.tx_hash),
+        vouchers: integer(row.vouchers),
       }));
     },
     addTokenPrice(sample, dropBefore) {

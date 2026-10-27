@@ -83,6 +83,8 @@ export interface TransferClaim {
   readonly txHash: string | null;
   /** The holder vouchers that its ticket took, or null while it waits; 0 when none was ready. */
   readonly vouchers: number | null;
+  /** The holder vouchers that the wallet asked for (27 Oct 2026), or null for all it can claim. */
+  readonly wanted: number | null;
 }
 
 export interface OpenTransferClaimInput {
@@ -92,6 +94,8 @@ export interface OpenTransferClaimInput {
   readonly expiresAt: number;
   /** The most claims by transfer that the wallet may have open. */
   readonly maxOpen: number;
+  /** The holder vouchers to claim, or null for all that the wallet can claim when it pays. */
+  readonly wanted: number | null;
   /** Picks the amount, given the amounts of the open claims of the wallet. */
   readonly pickAmount: (taken: ReadonlySet<bigint>) => bigint;
 }
@@ -109,7 +113,7 @@ export interface SettleTransferInput {
   readonly month: string;
   readonly at: number;
   readonly ticketExpiresAt: number;
-  /** The most holder vouchers that one ticket takes. */
+  /** The most holder vouchers that one ticket takes, whatever the claim asked for. */
   readonly maxVouchers: number;
 }
 
@@ -171,9 +175,9 @@ export interface HoldStore {
    */
   transferNaming: (claim: TransferClaim, to: string) => string | null;
   /**
-   * Fills the ticket of a waiting claim with every whole holder voucher that its wallet can claim,
-   * up to `maxVouchers`, and records the transfer that named it, in one step. A claim that no
-   * longer waits stays as it is.
+   * Fills the ticket of a waiting claim with the whole holder vouchers that it asked for, or with
+   * every one that its wallet can claim, never more than the wallet can claim nor `maxVouchers`,
+   * and records the transfer that named it, in one step. A claim that no longer waits stays as it is.
    */
   settleTransferClaim: (input: SettleTransferInput) => TransferClaim | null;
   totals: () => HoldTotals;

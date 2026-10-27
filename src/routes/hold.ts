@@ -105,7 +105,9 @@ export function createHoldRoute(deps: HoldRouteDeps): Hono {
       const existing = store.transferClaim(request.ticket);
       if (existing === null) {
         const claimable = walletStatus(store, wallet).claimable;
-        if (claimable < 1) throw new IssuerError('claim_too_large', MESSAGES.claimTooLarge(0));
+        if (claimable < (request.vouchers ?? 1)) {
+          throw new IssuerError('claim_too_large', MESSAGES.claimTooLarge(claimable));
+        }
       }
       const at = deps.now();
       const result = store.openTransferClaim({
@@ -114,6 +116,7 @@ export function createHoldRoute(deps: HoldRouteDeps): Hono {
         at,
         expiresAt: at + HOLD.transferClaim.ttlMs,
         maxOpen: HOLD.transferClaim.maxOpenPerWallet,
+        wanted: request.vouchers ?? null,
         pickAmount: (taken) => pickTransferAmount(taken),
       });
       if (result.outcome === 'ticket_taken') {

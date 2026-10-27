@@ -260,6 +260,15 @@ export interface TokenPaymentsResponse {
   }[];
 }
 
+/**
+ * GET /api/issuer/top-ups/payments: every payment that bought vouchers, in USDG or THKR, the oldest
+ * first, with how many it bought (27 Oct 2026). The dashboard counts the top-up vouchers of a
+ * wallet from it on the device, so it never names the wallet; the chain shows each payment anyway.
+ */
+export interface TopUpPaymentsResponse {
+  payments: { txHash: string; vouchers: number }[];
+}
+
 /** Why a wallet earns now, or why it does not. */
 export type HoldReason = 'earning' | 'below_minimum' | 'paused' | 'excluded' | 'contract';
 
@@ -333,13 +342,15 @@ export interface HoldClaimResponse {
 /**
  * POST /api/issuer/hold/transfer-claims: a claim by transfer, for a wallet in an app that signs no
  * message (25 Oct 2026). The issuer answers with an amount of THKR that names the claim; once the
- * wallet sends exactly that amount to the burn address, the count fills the ticket with every
- * holder voucher that the wallet can claim then.
+ * wallet sends exactly that amount to the burn address, the count fills the ticket with the holder
+ * vouchers that it asked for, or with every one that the wallet can claim then.
  */
 export const holdTransferClaimRequestSchema = z.strictObject({
   wallet: walletSchema,
   /** The SHA-256 of the secret of the ticket, in hex. Only the chat app holds the secret. */
   ticket: ticketHashSchema,
+  /** The holder vouchers to claim (27 Oct 2026); missing, all that the wallet can claim. */
+  vouchers: z.number().int().min(1).max(HOLD.maxVouchersPerClaim).optional(),
 });
 
 export type HoldTransferClaimRequest = z.infer<typeof holdTransferClaimRequestSchema>;
