@@ -14,7 +14,7 @@ describe('readEnv', () => {
   it('returns the settings when they are set', () => {
     expect(readEnv(LAPTOP)).toEqual({
       clientAddressHeader: null,
-      voucherKeyFile: '../../secret/voucher-dev.pem',
+      noteKeyFile: '../../secret/voucher-dev.pem',
       holderKeysDir: '../../secret/holder-keys-dev',
       databaseFile: '.data/ledger.db',
       testnetPayers: [],

@@ -18,13 +18,13 @@ import { fromBase64Url, sha256, toBase64Url, toHex } from '../src/lib/bytes.js';
 import {
   createTestApp,
   rpcCallOf,
-  TEST_VOUCHER_KEY,
+  TEST_NOTE_KEY,
   type FetchMock,
   type TestApp,
 } from './helpers.js';
-import { blindVouchers, finalizeVoucher, verifyVoucher } from './vouchers.js';
+import { blindNotes, finalizeNote, verifyNote } from './notes.js';
 
-const KEY = TEST_VOUCHER_KEY;
+const KEY = TEST_NOTE_KEY;
 const PAYER = privateKeyToAccount(generatePrivateKey());
 const STRANGER = privateKeyToAccount(generatePrivateKey());
 const TREASURY = privateKeyToAccount(generatePrivateKey()).address;
@@ -193,7 +193,7 @@ describe('top-ups on a ticket of the chat app (26 Oct 2026)', () => {
   it('never takes the signed text of blinded vouchers for a ticket', async () => {
     const { app } = createTestApp(chainWith({ [TX_HASH]: paidReceipt(1n * UNITS_PER_USDG) }));
     const { hash } = await newTicket();
-    const blinded = await blindVouchers(KEY, 1);
+    const blinded = await blindNotes(KEY, 1);
     const request = { keyId: KEY.keyId, blinded: blinded.map((one) => toBase64Url(one.blinded)) };
     const quote = (await (await send(app, 'quote', request)).json()) as QuoteResponse;
     const signature = await PAYER.signMessage({
@@ -213,7 +213,7 @@ describe('top-ups on a ticket of the chat app (26 Oct 2026)', () => {
     const { app } = createTestApp(chainWith({ [TX_HASH]: paidReceipt(3n * UNITS_PER_USDG) }));
     const ticket = await newTicket();
     await send(app, 'top-ups/claims', await claimBody(app, ticket.hash, 3));
-    const vouchers = await blindVouchers(KEY, 3);
+    const vouchers = await blindNotes(KEY, 3);
     const body = {
       ticket: ticket.secret,
       keyId: KEY.keyId,
@@ -224,7 +224,7 @@ describe('top-ups on a ticket of the chat app (26 Oct 2026)', () => {
     const { blindSignatures } = (await response.json()) as ClaimResponse;
     for (const [index, voucher] of vouchers.entries()) {
       const signature = fromBase64Url(blindSignatures[index] ?? '');
-      expect(verifyVoucher(KEY, await finalizeVoucher(KEY, voucher, signature))).toBe(true);
+      expect(verifyNote(KEY, await finalizeNote(KEY, voucher, signature))).toBe(true);
     }
     expect(await ticketOf(app, ticket.hash)).toMatchObject({ paid: 3, redeemed: 3 });
     // A lost answer is asked for again with the same vouchers, and counts once.
@@ -240,7 +240,7 @@ describe('top-ups on a ticket of the chat app (26 Oct 2026)', () => {
       send(app, 'top-ups/tickets/redeem', {
         ticket: ticket.secret,
         keyId: KEY.keyId,
-        blinded: (await blindVouchers(KEY, count)).map((one) => toBase64Url(one.blinded)),
+        blinded: (await blindNotes(KEY, count)).map((one) => toBase64Url(one.blinded)),
       });
     const unpaid = await redeem(1);
     expect(unpaid.status).toBe(404);
@@ -261,7 +261,7 @@ describe('top-ups on a ticket of the chat app (26 Oct 2026)', () => {
     const { app } = createTestApp(chainWith({ [TX_HASH]: paidReceipt(1n * UNITS_PER_USDG) }));
     const ticket = await newTicket();
     await send(app, 'top-ups/claims', await claimBody(app, ticket.hash, 1));
-    const blinded = (await blindVouchers(KEY, 1)).map((one) => toBase64Url(one.blinded));
+    const blinded = (await blindNotes(KEY, 1)).map((one) => toBase64Url(one.blinded));
     const otherKey = await send(app, 'top-ups/tickets/redeem', {
       ticket: ticket.secret,
       keyId: '00'.repeat(8),

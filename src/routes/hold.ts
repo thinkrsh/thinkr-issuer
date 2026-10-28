@@ -32,7 +32,7 @@ import {
 } from '../contract.js';
 import { holderKeyAt, type HolderKeys } from '../credit/holder-keys.js';
 import { assertSignedBy, requestHash } from '../credit/payment.js';
-import type { VoucherKey } from '../credit/voucher-key.js';
+import type { NoteKey } from '../credit/note-key.js';
 import { holdStats, holdTotals } from '../hold/stats.js';
 import { walletStatus } from '../hold/status.js';
 import type { HoldStore, HoldTicket } from '../hold/store.js';
@@ -231,7 +231,7 @@ function liveTicket(deps: HoldRouteDeps, hash: string): HoldTicket {
 }
 
 /** The key of the month of a ticket. */
-function keyOf(deps: HoldRouteDeps, ticket: HoldTicket): VoucherKey {
+function keyOf(deps: HoldRouteDeps, ticket: HoldTicket): NoteKey {
   const key = deps.holderKeys.get(ticket.month);
   if (key === undefined) throw new IssuerError('internal_error', MESSAGES.holderKeyMissing);
   return key;
@@ -245,7 +245,7 @@ async function assertClaimSignedBy(wallet: string, message: string, signature: s
   }
 }
 
-function blindSign(key: VoucherKey, blinded: Uint8Array): Uint8Array {
+function blindSign(key: NoteKey, blinded: Uint8Array): Uint8Array {
   try {
     return key.blindSign(blinded);
   } catch {

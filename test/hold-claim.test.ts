@@ -17,7 +17,7 @@ import { UNIT_HOURS_PER_VOUCHER } from '../src/hold/accrual.js';
 import { fromBase64Url, toBase64Url } from '../src/lib/bytes.js';
 import { openHoldStore } from '../src/node/hold-store.js';
 import { createTestApp, TEST_HOLDER_KEYS, type TestApp } from './helpers.js';
-import { blindVouchers, finalizeVoucher, verifyVoucher } from './vouchers.js';
+import { blindNotes, finalizeNote, verifyNote } from './notes.js';
 
 const NOW = Date.UTC(2026, 9, 26, 12);
 const HOLDER = privateKeyToAccount(generatePrivateKey());
@@ -158,7 +158,7 @@ describe('the ticket of a claim', () => {
     });
     expect(fromBase64Url(info.publicKey)).toEqual(OCTOBER_KEY.publicKey);
 
-    const vouchers = await blindVouchers(OCTOBER_KEY, 3);
+    const vouchers = await blindNotes(OCTOBER_KEY, 3);
     const body = {
       ticket: ticket.secret,
       keyId: info.keyId,
@@ -168,17 +168,17 @@ describe('the ticket of a claim', () => {
     expect(response.status).toBe(200);
     const { blindSignatures } = (await response.json()) as HoldRedeemResponse;
     for (const [index, voucher] of vouchers.entries()) {
-      const signed = await finalizeVoucher(
+      const signed = await finalizeNote(
         OCTOBER_KEY,
         voucher,
         fromBase64Url(blindSignatures[index] ?? ''),
       );
-      expect(verifyVoucher(OCTOBER_KEY, signed)).toBe(true);
+      expect(verifyNote(OCTOBER_KEY, signed)).toBe(true);
     }
 
     const again = await post(app, 'tickets/redeem', body);
     expect(((await again.json()) as HoldRedeemResponse).blindSignatures).toEqual(blindSignatures);
-    const other = await blindVouchers(OCTOBER_KEY, 3);
+    const other = await blindNotes(OCTOBER_KEY, 3);
     const response2 = await post(app, 'tickets/redeem', {
       ...body,
       blinded: other.map((voucher) => toBase64Url(voucher.blinded)),
@@ -191,7 +191,7 @@ describe('the ticket of a claim', () => {
     const ticket = newTicket();
     await claim(app, ticket.hash, 3);
     if (OCTOBER_KEY === undefined) throw new Error('No key for October.');
-    const two = await blindVouchers(OCTOBER_KEY, 2);
+    const two = await blindNotes(OCTOBER_KEY, 2);
     const blinded = two.map((voucher) => toBase64Url(voucher.blinded));
     const short = await post(app, 'tickets/redeem', {
       ticket: ticket.secret,

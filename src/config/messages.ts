@@ -1,6 +1,6 @@
 // Every message the issuer sends to the dashboard. The dashboard may show them to the user.
 import type { PaymentTarget } from '../credit/ledger.js';
-import { MAX_TOP_UP_VOUCHERS } from './credit.js';
+import { MAX_TOP_UP_NOTES } from './credit.js';
 
 /**
  * The line that names what a top-up pays for: the blinded vouchers of a request, or the ticket of
@@ -28,7 +28,7 @@ export const MESSAGES = {
   invalidRequest: 'The request is not valid.',
   rateLimited: 'Too many requests. Wait a minute and try again.',
   noClientAddress: 'The request reached the issuer without the address of its client.',
-  packInvalid: `A top-up buys from 1 to ${String(MAX_TOP_UP_VOUCHERS)} vouchers.`,
+  packInvalid: `A top-up buys from 1 to ${String(MAX_TOP_UP_NOTES)} vouchers.`,
   keyChanged: 'The key of the vouchers changed. Start the top-up again.',
   signatureInvalid: 'The signature does not come from the wallet that paid.',
   paymentPending: 'The payment is not on the chain yet. Try again in a moment.',

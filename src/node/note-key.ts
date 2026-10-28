@@ -1,4 +1,4 @@
-// The voucher key on Node. A blind signature is the raw RSA operation of RFC 8017 (RSASP1), which
+// The note key on Node. A blind signature is the raw RSA operation of RFC 8017 (RSASP1), which
 // OpenSSL runs with its own blinding; RFC 9474, section 4.3, asks to check the result with the
 // public key before it leaves, which guards against a faulty computation leaking the key.
 import {
@@ -10,17 +10,17 @@ import {
   publicEncrypt,
 } from 'node:crypto';
 
-import { VOUCHER_SIGNATURE } from '../config/credit.js';
-import type { VoucherKey } from '../credit/voucher-key.js';
+import { NOTE_SIGNATURE } from '../config/credit.js';
+import type { NoteKey } from '../credit/note-key.js';
 
-const MODULUS_BYTES = VOUCHER_SIGNATURE.modulusBits / 8;
+const MODULUS_BYTES = NOTE_SIGNATURE.modulusBits / 8;
 
-export function voucherKeyFromPem(pem: string): VoucherKey {
+export function noteKeyFromPem(pem: string): NoteKey {
   const privateKey = createPrivateKey(pem);
   const bits = privateKey.asymmetricKeyDetails?.modulusLength;
-  if (privateKey.asymmetricKeyType !== 'rsa' || bits !== VOUCHER_SIGNATURE.modulusBits) {
+  if (privateKey.asymmetricKeyType !== 'rsa' || bits !== NOTE_SIGNATURE.modulusBits) {
     throw new Error(
-      `The voucher key must be RSA with a ${String(VOUCHER_SIGNATURE.modulusBits)}-bit modulus.`,
+      `The note key must be RSA with a ${String(NOTE_SIGNATURE.modulusBits)}-bit modulus.`,
     );
   }
   const publicKey = createPublicKey(privateKey);
@@ -28,7 +28,7 @@ export function voucherKeyFromPem(pem: string): VoucherKey {
   const keyId = createHash('sha256')
     .update(spki)
     .digest('hex')
-    .slice(0, VOUCHER_SIGNATURE.keyIdBytes * 2);
+    .slice(0, NOTE_SIGNATURE.keyIdBytes * 2);
 
   return {
     keyId,

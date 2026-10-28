@@ -34,10 +34,10 @@ export const CREDIT = {
 } as const;
 
 /** The most vouchers that one top-up may buy: the cap of decision 95, in vouchers. */
-export const MAX_TOP_UP_VOUCHERS = Math.floor(CREDIT.maxTopUpUsd / CREDIT.voucherUsd);
+export const MAX_TOP_UP_NOTES = Math.floor(CREDIT.maxTopUpUsd / CREDIT.voucherUsd);
 
 /** The blind RSA signature of the vouchers: RSABSSA-SHA384-PSS-Deterministic of RFC 9474. */
-export const VOUCHER_SIGNATURE = {
+export const NOTE_SIGNATURE = {
   modulusBits: 2048,
   hash: 'sha384',
   /** The salt of RSA-PSS: the length of a SHA-384 digest. */

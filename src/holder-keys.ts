@@ -8,7 +8,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { VOUCHER_SIGNATURE } from './config/credit.js';
+import { NOTE_SIGNATURE } from './config/credit.js';
 import { toBase64Url } from './lib/bytes.js';
 import { holderKeysFromDir } from './node/holder-keys.js';
 
@@ -37,7 +37,7 @@ function make(dir: string, first: string, count: number): void {
       continue;
     }
     const { privateKey } = generateKeyPairSync('rsa', {
-      modulusLength: VOUCHER_SIGNATURE.modulusBits,
+      modulusLength: NOTE_SIGNATURE.modulusBits,
     });
     writeFileSync(file, privateKey.export({ type: 'pkcs8', format: 'pem' }), {
       mode: OWNER_ONLY,

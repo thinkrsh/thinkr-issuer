@@ -22,13 +22,13 @@ import { openLedger } from '../src/node/ledger.js';
 import {
   createTestApp,
   rpcCallOf,
-  TEST_VOUCHER_KEY,
+  TEST_NOTE_KEY,
   type FetchMock,
   type TestApp,
 } from './helpers.js';
-import { blindVouchers } from './vouchers.js';
+import { blindNotes } from './notes.js';
 
-const KEY = TEST_VOUCHER_KEY;
+const KEY = TEST_NOTE_KEY;
 const HOLDER = privateKeyToAccount(generatePrivateKey());
 const STRANGER = privateKeyToAccount(generatePrivateKey());
 const TREASURY = privateKeyToAccount(generatePrivateKey()).address;
@@ -118,7 +118,7 @@ async function errorOf(response: Response): Promise<ErrorBody['error']> {
 
 /** The blinded vouchers of a top-up of five. */
 async function topUpRequest(): Promise<{ keyId: string; blinded: string[] }> {
-  const vouchers = await blindVouchers(KEY, VOUCHERS);
+  const vouchers = await blindNotes(KEY, VOUCHERS);
   return { keyId: KEY.keyId, blinded: vouchers.map((one) => toBase64Url(one.blinded)) };
 }
 

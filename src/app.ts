@@ -12,7 +12,7 @@ import { SERVER } from './config/server.js';
 import { TOKEN_PAYMENT, type TokenPaymentConfig } from './config/token.js';
 import type { HolderKeys } from './credit/holder-keys.js';
 import type { Ledger } from './credit/ledger.js';
-import type { VoucherKey } from './credit/voucher-key.js';
+import type { NoteKey } from './credit/note-key.js';
 import type { HoldStore } from './hold/store.js';
 import type { ClaimDeposits } from './hold/claim-deposits.js';
 import { IssuerError, errorBody } from './lib/errors.js';
@@ -32,7 +32,7 @@ export interface AppDeps {
   /** Payments claimed, quotes, and prices of THKR. */
   readonly ledger: Ledger;
   /** Signs the blind vouchers of credit. */
-  readonly voucherKey: VoucherKey;
+  readonly noteKey: NoteKey;
   /** The transfers of THKR and what each wallet earned by its hold. */
   readonly holdStore: HoldStore;
   /** Sign the holder vouchers, one key for each month (decision 189). */

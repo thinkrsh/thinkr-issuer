@@ -15,13 +15,13 @@ import { toBase64Url } from '../src/lib/bytes.js';
 import {
   createTestApp,
   rpcCallOf,
-  TEST_VOUCHER_KEY,
+  TEST_NOTE_KEY,
   type FetchMock,
   type TestApp,
 } from './helpers.js';
-import { blindVouchers, type BlindedVoucher } from './vouchers.js';
+import { blindNotes, type BlindedNote } from './notes.js';
 
-const KEY = TEST_VOUCHER_KEY;
+const KEY = TEST_NOTE_KEY;
 const PAYER = privateKeyToAccount(generatePrivateKey());
 const STRANGER = privateKeyToAccount(generatePrivateKey());
 const TREASURY = privateKeyToAccount(generatePrivateKey()).address;
@@ -107,11 +107,11 @@ async function errorOf(response: Response): Promise<ErrorBody['error']> {
   return ((await response.json()) as ErrorBody).error;
 }
 
-function requestOf(vouchers: readonly BlindedVoucher[]): { keyId: string; blinded: string[] } {
+function requestOf(vouchers: readonly BlindedNote[]): { keyId: string; blinded: string[] } {
   return { keyId: KEY.keyId, blinded: vouchers.map((one) => toBase64Url(one.blinded)) };
 }
 
-async function tokenQuote(app: TestApp['app'], vouchers: readonly BlindedVoucher[]) {
+async function tokenQuote(app: TestApp['app'], vouchers: readonly BlindedNote[]) {
   const response = await send(app, 'quote', { ...requestOf(vouchers), asset: 'thkr' });
   return { response, quote: (await response.clone().json()) as QuoteResponse };
 }
@@ -119,7 +119,7 @@ async function tokenQuote(app: TestApp['app'], vouchers: readonly BlindedVoucher
 /** A top-up in THKR as the dashboard sends it: the quote, the signed text, and the transaction. */
 async function claimBody(
   app: TestApp['app'],
-  vouchers: readonly BlindedVoucher[],
+  vouchers: readonly BlindedNote[],
   signer = PAYER,
 ): Promise<{ body: Record<string, unknown>; quote: QuoteResponse }> {
   const { quote } = await tokenQuote(app, vouchers);
@@ -165,7 +165,7 @@ describe('payment in THKR on the network of the issuer', () => {
 
 describe('POST /api/issuer/quote in THKR', () => {
   it('quotes 5 vouchers at $4 of THKR, which buys 25% more credit, for 15 minutes', async () => {
-    const { response, quote } = await tokenQuote(tokenApp().app, await blindVouchers(KEY, 5));
+    const { response, quote } = await tokenQuote(tokenApp().app, await blindNotes(KEY, 5));
     expect(response.status).toBe(200);
     expect(quote).toMatchObject({
       asset: 'thkr',
@@ -186,16 +186,13 @@ describe('POST /api/issuer/quote in THKR', () => {
 
   it('rounds the amount up to a whole THKR', async () => {
     const perUsd = 40_000n * WHOLE + 1n;
-    const { quote } = await tokenQuote(
-      tokenApp(undefined, perUsd).app,
-      await blindVouchers(KEY, 1),
-    );
+    const { quote } = await tokenQuote(tokenApp(undefined, perUsd).app, await blindNotes(KEY, 1));
     expect(quote.amount).toBe((32_001n * WHOLE).toString());
   });
 
   it('says that payment in THKR opens soon while no wallet is named', async () => {
     const closed = createTestApp(undefined, { tokenPayment: CLOSED });
-    const { response } = await tokenQuote(closed.app, await blindVouchers(KEY, 1));
+    const { response } = await tokenQuote(closed.app, await blindNotes(KEY, 1));
     expect(response.status).toBe(400);
     expect(await errorOf(response)).toEqual({
       code: 'invalid_request',
@@ -206,7 +203,7 @@ describe('POST /api/issuer/quote in THKR', () => {
   it('asks to pay with USDG while the price of THKR is unknown, with no 5xx', async () => {
     // Cloudflare puts a page of its own over a 502 of the origin, which hides the message.
     const testApp = createTestApp(undefined, { tokenPayment: TOKEN, now: () => NOW });
-    const { response } = await tokenQuote(testApp.app, await blindVouchers(KEY, 1));
+    const { response } = await tokenQuote(testApp.app, await blindNotes(KEY, 1));
     expect(response.status).toBe(409);
     expect((await errorOf(response)).message).toMatch(/Pay with USDG/);
   });
@@ -215,7 +212,7 @@ describe('POST /api/issuer/quote in THKR', () => {
 describe('POST /api/issuer/claims in THKR', () => {
   it('signs the vouchers once the THKR of the quote is in its wallet, and lists the payment', async () => {
     const testApp = tokenApp(chainWith(paid(160_000n * WHOLE)));
-    const vouchers = await blindVouchers(KEY, 5);
+    const vouchers = await blindNotes(KEY, 5);
     const { body } = await claimBody(testApp.app, vouchers);
     const response = await send(testApp.app, 'claims', body);
     expect(response.status).toBe(200);
@@ -240,7 +237,7 @@ describe('POST /api/issuer/claims in THKR', () => {
 
   it('answers the same claim again without asking the chain', async () => {
     const testApp = tokenApp(chainWith(paid(32_000n * WHOLE)));
-    const { body } = await claimBody(testApp.app, await blindVouchers(KEY, 1));
+    const { body } = await claimBody(testApp.app, await blindNotes(KEY, 1));
     const first = (await (await send(testApp.app, 'claims', body)).json()) as ClaimResponse;
     const calls = testApp.fetchMock.mock.calls.length;
     const second = (await (await send(testApp.app, 'claims', body)).json()) as ClaimResponse;
@@ -250,9 +247,9 @@ describe('POST /api/issuer/claims in THKR', () => {
 
   it('refuses a payment in THKR that paid for other vouchers', async () => {
     const testApp = tokenApp(chainWith(paid(32_000n * WHOLE)));
-    const first = await claimBody(testApp.app, await blindVouchers(KEY, 1));
+    const first = await claimBody(testApp.app, await blindNotes(KEY, 1));
     expect((await send(testApp.app, 'claims', first.body)).status).toBe(200);
-    const other = await claimBody(testApp.app, await blindVouchers(KEY, 1));
+    const other = await claimBody(testApp.app, await blindNotes(KEY, 1));
     const response = await send(testApp.app, 'claims', other.body);
     expect(response.status).toBe(409);
     expect((await errorOf(response)).code).toBe('payment_used');
@@ -260,7 +257,7 @@ describe('POST /api/issuer/claims in THKR', () => {
 
   it('refuses an amount that no quote of the top-up asked for', async () => {
     const testApp = tokenApp(chainWith(paid(1n * WHOLE)));
-    const vouchers = await blindVouchers(KEY, 1);
+    const vouchers = await blindNotes(KEY, 1);
     const { body, quote } = await claimBody(testApp.app, vouchers);
     const amount = '1000000000000000000';
     const message = quote.message.replace(/for [\d,]+ THKR/, 'for 1 THKR');
@@ -282,7 +279,7 @@ describe('POST /api/issuer/claims in THKR', () => {
     ];
     for (const receipt of receipts) {
       const testApp = tokenApp(chainWith(receipt));
-      const { body } = await claimBody(testApp.app, await blindVouchers(KEY, 1));
+      const { body } = await claimBody(testApp.app, await blindNotes(KEY, 1));
       const response = await send(testApp.app, 'claims', body);
       expect(response.status).toBe(400);
       expect((await errorOf(response)).code).toBe('payment_invalid');
@@ -292,7 +289,7 @@ describe('POST /api/issuer/claims in THKR', () => {
   it('refuses a payment in a block after its quote ended', async () => {
     const late = NOW + TOKEN_PAYMENT.quoteTtlMs + MS_PER_SECOND;
     const testApp = tokenApp(chainWith(paid(32_000n * WHOLE), late));
-    const { body } = await claimBody(testApp.app, await blindVouchers(KEY, 1));
+    const { body } = await claimBody(testApp.app, await blindNotes(KEY, 1));
     const response = await send(testApp.app, 'claims', body);
     expect(response.status).toBe(400);
     expect((await errorOf(response)).message).toMatch(/after its quote ended/);
@@ -304,7 +301,7 @@ describe('POST /api/issuer/claims in THKR', () => {
 
   it('refuses a claim in THKR with no amount, or signed by another wallet', async () => {
     const testApp = tokenApp(chainWith(paid(32_000n * WHOLE)));
-    const vouchers = await blindVouchers(KEY, 1);
+    const vouchers = await blindNotes(KEY, 1);
     const { body } = await claimBody(testApp.app, vouchers);
     const noAmount = await send(testApp.app, 'claims', { ...body, amount: undefined });
     expect(noAmount.status).toBe(400);

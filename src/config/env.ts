@@ -47,7 +47,7 @@ const envSchema = z.object({
 
 export interface Env {
   readonly clientAddressHeader: string | null;
-  readonly voucherKeyFile: string;
+  readonly noteKeyFile: string;
   readonly holderKeysDir: string;
   readonly databaseFile: string;
   /** In lower case. */
@@ -73,7 +73,7 @@ export function readEnv(source: EnvSource): Env {
   }
   return {
     clientAddressHeader: result.data.CLIENT_ADDRESS_HEADER ?? null,
-    voucherKeyFile: result.data.VOUCHER_KEY_FILE,
+    noteKeyFile: result.data.VOUCHER_KEY_FILE,
     holderKeysDir: result.data.HOLDER_KEYS_DIR,
     databaseFile: result.data.DATABASE_FILE,
     testnetPayers: (result.data.TESTNET_PAYERS ?? '')

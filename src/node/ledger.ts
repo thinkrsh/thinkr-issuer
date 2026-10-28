@@ -10,7 +10,7 @@ import type {
   Ledger,
   PaymentClaim,
   PaymentTarget,
-  PaymentVouchers,
+  PaymentNotes,
   PriceSample,
   TicketRedemption,
   TokenPaymentRecord,
@@ -247,7 +247,7 @@ export function openLedger(file: string): Ledger {
         paidAt: integer(row.paid_at),
       }));
     },
-    paymentVouchers(): PaymentVouchers[] {
+    paymentNotes(): PaymentNotes[] {
       return selectPayments.all().map((row) => ({
         txHash: text(row.tx_hash),
         vouchers: integer(row.vouchers),

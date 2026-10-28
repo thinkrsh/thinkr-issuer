@@ -2,7 +2,7 @@
 // these shapes (apps/dash/src/services/contract.ts mirrors them).
 import { z } from 'zod';
 
-import { CREDIT, MAX_TOP_UP_VOUCHERS, VOUCHER_SIGNATURE } from './config/credit.js';
+import { CREDIT, MAX_TOP_UP_NOTES, NOTE_SIGNATURE } from './config/credit.js';
 import { HOLD } from './config/hold.js';
 import { MESSAGES } from './config/messages.js';
 
@@ -41,17 +41,17 @@ function base64UrlOf(bytes: number): z.ZodString {
     .regex(/^[A-Za-z0-9_-]+$/);
 }
 
-const MODULUS_BYTES = VOUCHER_SIGNATURE.modulusBits / 8;
+const MODULUS_BYTES = NOTE_SIGNATURE.modulusBits / 8;
 
 const keyIdSchema = z
   .string()
-  .regex(new RegExp(`^[0-9a-f]{${String(VOUCHER_SIGNATURE.keyIdBytes * 2)}}$`));
+  .regex(new RegExp(`^[0-9a-f]{${String(NOTE_SIGNATURE.keyIdBytes * 2)}}$`));
 
 /** The blinded vouchers of one top-up: from one voucher up to the cap of one top-up. */
 const blindedSchema = z
   .array(base64UrlOf(MODULUS_BYTES))
   .min(1, MESSAGES.packInvalid)
-  .max(MAX_TOP_UP_VOUCHERS, MESSAGES.packInvalid);
+  .max(MAX_TOP_UP_NOTES, MESSAGES.packInvalid);
 
 /** What pays for a top-up: USDG, or the token of Thinkr, THKR, which buys 25% more credit. */
 export type PaymentAsset = 'usdg' | 'thkr';
@@ -183,7 +183,7 @@ export const ticketQuoteRequestSchema = z.strictObject({
     .number()
     .int()
     .min(1, MESSAGES.packInvalid)
-    .max(MAX_TOP_UP_VOUCHERS, MESSAGES.packInvalid),
+    .max(MAX_TOP_UP_NOTES, MESSAGES.packInvalid),
   /** Unset: USDG. */
   asset: z.enum(['usdg', 'thkr']).optional(),
   /** The wallet that will pay, for the discount of a holder. Unset: no discount. */

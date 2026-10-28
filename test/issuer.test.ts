@@ -2,7 +2,7 @@ import { toEventSelector, type Hex } from 'viem';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { describe, expect, it, vi } from 'vitest';
 
-import { MAX_TOP_UP_VOUCHERS, VOUCHER_SIGNATURE } from '../src/config/credit.js';
+import { MAX_TOP_UP_NOTES, NOTE_SIGNATURE } from '../src/config/credit.js';
 import { PAYMENTS } from '../src/config/payments.js';
 import { TOKEN_PAYMENT } from '../src/config/token.js';
 import type { ClaimResponse, ErrorBody, QuoteResponse } from '../src/contract.js';
@@ -10,14 +10,14 @@ import { assertMayPay } from '../src/credit/payment.js';
 import { fromBase64Url, toBase64Url } from '../src/lib/bytes.js';
 import {
   createTestApp,
-  TEST_VOUCHER_KEY,
+  TEST_NOTE_KEY,
   upstreamCall,
   type FetchMock,
   type TestApp,
 } from './helpers.js';
-import { blindVouchers, finalizeVoucher, verifyVoucher, type BlindedVoucher } from './vouchers.js';
+import { blindNotes, finalizeNote, verifyNote, type BlindedNote } from './notes.js';
 
-const KEY = TEST_VOUCHER_KEY;
+const KEY = TEST_NOTE_KEY;
 const PAYER = privateKeyToAccount(generatePrivateKey());
 const STRANGER = privateKeyToAccount(generatePrivateKey());
 const TX_HASH = `0x${'ab'.repeat(32)}`;
@@ -74,7 +74,7 @@ async function errorCode(response: Response): Promise<string> {
 /** A top-up as the dashboard sends it: the quote, the signed text, and the transaction. */
 async function claimBody(
   app: TestApp['app'],
-  vouchers: readonly BlindedVoucher[],
+  vouchers: readonly BlindedNote[],
   signer = PAYER,
 ): Promise<Record<string, unknown>> {
   const request = { keyId: KEY.keyId, blinded: vouchers.map((one) => toBase64Url(one.blinded)) };
@@ -112,7 +112,7 @@ describe('GET /api/issuer/network', () => {
 describe('POST /api/issuer/quote', () => {
   it('says what to sign and pay for the vouchers', async () => {
     const { app } = createTestApp();
-    const vouchers = await blindVouchers(KEY, 5);
+    const vouchers = await blindNotes(KEY, 5);
     const response = await post(app, 'quote', {
       keyId: KEY.keyId,
       blinded: vouchers.map((one) => toBase64Url(one.blinded)),
@@ -136,7 +136,7 @@ describe('POST /api/issuer/quote', () => {
 
   it('takes any whole number of vouchers up to the cap of one top-up, beyond the packs', async () => {
     const { app } = createTestApp();
-    const vouchers = await blindVouchers(KEY, 2);
+    const vouchers = await blindNotes(KEY, 2);
     const response = await post(app, 'quote', {
       keyId: KEY.keyId,
       blinded: vouchers.map((one) => toBase64Url(one.blinded)),
@@ -149,8 +149,8 @@ describe('POST /api/issuer/quote', () => {
 
   it('refuses a top-up of no voucher, or of more than the cap', async () => {
     // A blinded voucher of the right size is enough here: the count fails before any signature.
-    const one = toBase64Url(new Uint8Array(VOUCHER_SIGNATURE.modulusBits / 8));
-    for (const count of [0, MAX_TOP_UP_VOUCHERS + 1]) {
+    const one = toBase64Url(new Uint8Array(NOTE_SIGNATURE.modulusBits / 8));
+    for (const count of [0, MAX_TOP_UP_NOTES + 1]) {
       const response = await post(createTestApp().app, 'quote', {
         keyId: KEY.keyId,
         blinded: Array.from({ length: count }, () => one),
@@ -186,14 +186,14 @@ describe('who may top up', () => {
 describe('POST /api/issuer/claims', () => {
   it('signs the blinded vouchers once the payment is on the chain', async () => {
     const testApp = createTestApp(chainWith(paidReceipt(5n)));
-    const vouchers = await blindVouchers(KEY, 5);
+    const vouchers = await blindNotes(KEY, 5);
     const response = await post(testApp.app, 'claims', await claimBody(testApp.app, vouchers));
     expect(response.status).toBe(200);
     const { blindSignatures } = (await response.json()) as ClaimResponse;
     expect(blindSignatures).toHaveLength(5);
     for (const [index, voucher] of vouchers.entries()) {
       const blindSignature = fromBase64Url(blindSignatures[index] ?? '');
-      expect(verifyVoucher(KEY, await finalizeVoucher(KEY, voucher, blindSignature))).toBe(true);
+      expect(verifyNote(KEY, await finalizeNote(KEY, voucher, blindSignature))).toBe(true);
     }
     const { url, init } = upstreamCall(testApp.fetchMock);
     expect(url).toBe(PAYMENTS.network.rpcUrl);
@@ -206,7 +206,7 @@ describe('POST /api/issuer/claims', () => {
 
   it('answers the same claim again without asking the chain', async () => {
     const testApp = createTestApp(chainWith(paidReceipt(1n)));
-    const body = await claimBody(testApp.app, await blindVouchers(KEY, 1));
+    const body = await claimBody(testApp.app, await blindNotes(KEY, 1));
     const first = (await (await post(testApp.app, 'claims', body)).json()) as ClaimResponse;
     const second = (await (await post(testApp.app, 'claims', body)).json()) as ClaimResponse;
     expect(second).toEqual(first);
@@ -215,11 +215,11 @@ describe('POST /api/issuer/claims', () => {
 
   it('refuses a payment that paid for other vouchers', async () => {
     const testApp = createTestApp(chainWith(paidReceipt(1n)));
-    await post(testApp.app, 'claims', await claimBody(testApp.app, await blindVouchers(KEY, 1)));
+    await post(testApp.app, 'claims', await claimBody(testApp.app, await blindNotes(KEY, 1)));
     const other = await post(
       testApp.app,
       'claims',
-      await claimBody(testApp.app, await blindVouchers(KEY, 1)),
+      await claimBody(testApp.app, await blindNotes(KEY, 1)),
     );
     expect(other.status).toBe(409);
     expect(await errorCode(other)).toBe('payment_used');
@@ -228,7 +228,7 @@ describe('POST /api/issuer/claims', () => {
   it('asks to wait for a payment that is not in a block yet, and records nothing', async () => {
     const fetchMock = chainWith(null);
     const testApp = createTestApp(fetchMock);
-    const body = await claimBody(testApp.app, await blindVouchers(KEY, 1));
+    const body = await claimBody(testApp.app, await blindNotes(KEY, 1));
     const pending = await post(testApp.app, 'claims', body);
     expect(pending.status).toBe(409);
     expect(await errorCode(pending)).toBe('payment_pending');
@@ -246,7 +246,7 @@ describe('POST /api/issuer/claims', () => {
     ];
     for (const receipt of receipts) {
       const testApp = createTestApp(chainWith(receipt));
-      const body = await claimBody(testApp.app, await blindVouchers(KEY, 5));
+      const body = await claimBody(testApp.app, await blindNotes(KEY, 5));
       const response = await post(testApp.app, 'claims', body);
       expect(response.status).toBe(400);
       expect(await errorCode(response)).toBe('payment_invalid');
@@ -255,7 +255,7 @@ describe('POST /api/issuer/claims', () => {
 
   it('refuses a claim signed by a wallet other than the one that paid', async () => {
     const testApp = createTestApp(chainWith(paidReceipt(1n)));
-    const body = await claimBody(testApp.app, await blindVouchers(KEY, 1), STRANGER);
+    const body = await claimBody(testApp.app, await blindNotes(KEY, 1), STRANGER);
     const response = await post(testApp.app, 'claims', body);
     expect(response.status).toBe(400);
     expect(await errorCode(response)).toBe('payment_invalid');
@@ -265,7 +265,7 @@ describe('POST /api/issuer/claims', () => {
   it('reads payments from CHAIN_RPC_URL when it is set, and keeps it out of the quote', async () => {
     const rpcUrl = 'https://rpc.provider.test/v2/secret-key';
     const testApp = createTestApp(chainWith(paidReceipt(1n)), { chainRpcUrl: rpcUrl });
-    const body = await claimBody(testApp.app, await blindVouchers(KEY, 1));
+    const body = await claimBody(testApp.app, await blindNotes(KEY, 1));
     expect((await post(testApp.app, 'claims', body)).status).toBe(200);
     expect(upstreamCall(testApp.fetchMock).url).toBe(rpcUrl);
     const request = { keyId: KEY.keyId, blinded: body.blinded };
@@ -275,7 +275,7 @@ describe('POST /api/issuer/claims', () => {
 
   it('reports a chain it cannot reach', async () => {
     const testApp = createTestApp(vi.fn<typeof fetch>(() => Promise.reject(new TypeError('down'))));
-    const body = await claimBody(testApp.app, await blindVouchers(KEY, 1));
+    const body = await claimBody(testApp.app, await blindNotes(KEY, 1));
     const response = await post(testApp.app, 'claims', body);
     expect(response.status).toBe(502);
     expect(await errorCode(response)).toBe('upstream_error');

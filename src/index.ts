@@ -18,10 +18,10 @@ import { claimDepositsOnChain, operatorKeyFrom } from './node/claim-deposits.js'
 import { openHoldStore } from './node/hold-store.js';
 import { holderKeysFromDir } from './node/holder-keys.js';
 import { openLedger } from './node/ledger.js';
-import { voucherKeyFromPem } from './node/voucher-key.js';
+import { noteKeyFromPem } from './node/note-key.js';
 
 const env = readEnv(process.env);
-const voucherKey = voucherKeyFromPem(readFileSync(env.voucherKeyFile, 'utf8'));
+const noteKey = noteKeyFromPem(readFileSync(env.noteKeyFile, 'utf8'));
 const ledger = openLedger(env.databaseFile);
 const holdStore = openHoldStore(env.databaseFile);
 const holderKeys = holderKeysFromDir(env.holderKeysDir);
@@ -59,7 +59,7 @@ const app = createApp({
   clientKey: visitorKey,
   log: writeLogLine,
   ledger,
-  voucherKey,
+  noteKey,
   holdStore,
   holderKeys,
   claimDeposits,
@@ -68,7 +68,7 @@ const app = createApp({
 const server = serve({ fetch: app.fetch, hostname: SERVER.host, port: SERVER.port }, (info) => {
   writeLogLine(
     `Issuer listening on http://${info.address}:${String(info.port)}${SERVER.basePath}, ` +
-      `voucher key ${voucherKey.keyId}, holder keys ${[...holderKeys.keys()].join(' ')}`,
+      `voucher key ${noteKey.keyId}, holder keys ${[...holderKeys.keys()].join(' ')}`,
   );
 });
 

@@ -18,7 +18,7 @@ import { z } from 'zod';
 import { HOLD } from '../config/hold.js';
 import { MESSAGES } from '../config/messages.js';
 import { PAYMENTS } from '../config/payments.js';
-import { CREDIT, MAX_TOP_UP_VOUCHERS } from '../config/credit.js';
+import { CREDIT, MAX_TOP_UP_NOTES } from '../config/credit.js';
 import type { TokenPaymentConfig } from '../config/token.js';
 import {
   claimRequestSchema,
@@ -54,7 +54,7 @@ import {
   tokenPaymentsOf,
   tokenTopUpMessage,
 } from '../credit/token-payment.js';
-import type { VoucherKey } from '../credit/voucher-key.js';
+import type { NoteKey } from '../credit/note-key.js';
 import type { HoldStore } from '../hold/store.js';
 import { parseBody, readJson } from '../lib/body.js';
 import { fromBase64Url, sha256, toBase64Url, toHex } from '../lib/bytes.js';
@@ -68,7 +68,7 @@ export interface IssuerRouteDeps extends PaymentDeps {
   /** The limiter of the requests of the chat app for the tickets of top-ups. */
   readonly ticketLimiter: RateLimiter;
   readonly ledger: Ledger;
-  readonly voucherKey: VoucherKey;
+  readonly noteKey: NoteKey;
   /** The wallets that may top up while payment runs on a testnet, in lower case. */
   readonly testnetPayers: readonly string[];
   /** Payment in THKR: TOKEN_PAYMENT of config/token.ts. */
@@ -113,7 +113,7 @@ export function createIssuerRoute(deps: IssuerRouteDeps): Hono {
         sinceBlock: PAYMENTS.sinceBlock,
         voucherUsd: CREDIT.voucherUsd,
         packs: CREDIT.packs,
-        maxVouchers: MAX_TOP_UP_VOUCHERS,
+        maxVouchers: MAX_TOP_UP_NOTES,
         tokenPayment: tokenPaymentInfo(deps.tokenPayment),
         holderDiscounts: HOLD.discountTiers.map((tier) => ({ ...tier })),
       }),
@@ -121,7 +121,7 @@ export function createIssuerRoute(deps: IssuerRouteDeps): Hono {
     .post('/quote', async (c) => {
       takeRequest(deps, c);
       const request = parseBody(quoteRequestSchema, await readJson(c));
-      const blinded = blindedOf(deps.voucherKey, request);
+      const blinded = blindedOf(deps.noteKey, request);
       const target: PaymentTarget = { kind: 'request', hash: await requestHash(blinded) };
       return c.json<QuoteResponse>(
         await quoteOf(deps, blinded.length, target, request.asset, request.payer),
@@ -131,7 +131,7 @@ export function createIssuerRoute(deps: IssuerRouteDeps): Hono {
       takeRequest(deps, c);
       const request = parseBody(claimRequestSchema, await readJson(c));
       assertMayPay(PAYMENTS.network, deps.testnetPayers, request.payer);
-      const blinded = blindedOf(deps.voucherKey, request);
+      const blinded = blindedOf(deps.noteKey, request);
       const claim: Claim = {
         request,
         txHash: request.txHash.toLowerCase(),
@@ -139,7 +139,7 @@ export function createIssuerRoute(deps: IssuerRouteDeps): Hono {
         vouchers: blinded.length,
       };
       const settle = await checkClaim(deps, claim, request.signature);
-      const blindSignatures = blinded.map((one) => toBase64Url(blindSign(deps.voucherKey, one)));
+      const blindSignatures = blinded.map((one) => toBase64Url(blindSign(deps.noteKey, one)));
       // A payment claimed before for the same vouchers gets the same signatures again, so that
       // a dashboard that lost the answer can ask once more.
       await settle();
@@ -177,8 +177,8 @@ export function createIssuerRoute(deps: IssuerRouteDeps): Hono {
       return c.json<TopUpTicketResponse>({
         paid: ticket?.paid ?? 0,
         redeemed: ticket?.redeemed ?? 0,
-        keyId: deps.voucherKey.keyId,
-        publicKey: toBase64Url(deps.voucherKey.publicKey),
+        keyId: deps.noteKey.keyId,
+        publicKey: toBase64Url(deps.noteKey.publicKey),
         voucherUsd: CREDIT.voucherUsd,
       });
     })
@@ -186,9 +186,9 @@ export function createIssuerRoute(deps: IssuerRouteDeps): Hono {
       takeRequest(deps, c, deps.ticketLimiter);
       const request = parseBody(ticketRedeemRequestSchema, await readJson(c));
       const hash = toHex(await sha256(fromBase64Url(request.ticket)));
-      const blinded = blindedOf(deps.voucherKey, request);
+      const blinded = blindedOf(deps.noteKey, request);
       // Signs first, so that vouchers count as fetched only once their signatures exist.
-      const blindSignatures = blinded.map((one) => toBase64Url(blindSign(deps.voucherKey, one)));
+      const blindSignatures = blinded.map((one) => toBase64Url(blindSign(deps.noteKey, one)));
       const outcome = deps.ledger.redeemTicket(hash, await requestHash(blinded), blinded.length);
       if (outcome === 'unpaid') {
         throw new IssuerError('ticket_unknown', MESSAGES.topUpTicketUnpaid);
@@ -209,7 +209,7 @@ export function createIssuerRoute(deps: IssuerRouteDeps): Hono {
     })
     .get('/top-ups/payments', (c) => {
       takeRequest(deps, c);
-      return c.json<TopUpPaymentsResponse>({ payments: deps.ledger.paymentVouchers() });
+      return c.json<TopUpPaymentsResponse>({ payments: deps.ledger.paymentNotes() });
     });
 }
 
@@ -298,14 +298,14 @@ function takeRequest(deps: IssuerRouteDeps, c: Context, limiter = deps.limiter):
 
 /** The blinded vouchers of a top-up, made with the key that signs them today. */
 function blindedOf(
-  key: VoucherKey,
+  key: NoteKey,
   request: { readonly keyId: string; readonly blinded: readonly string[] },
 ): Uint8Array[] {
   if (request.keyId !== key.keyId) throw new IssuerError('key_changed', MESSAGES.keyChanged);
   return request.blinded.map(fromBase64Url);
 }
 
-function blindSign(key: VoucherKey, blinded: Uint8Array): Uint8Array {
+function blindSign(key: NoteKey, blinded: Uint8Array): Uint8Array {
   try {
     return key.blindSign(blinded);
   } catch {

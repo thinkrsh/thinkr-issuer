@@ -4,7 +4,7 @@ import { createHash, generateKeyPairSync } from 'node:crypto';
 import { vi } from 'vitest';
 
 import { createApp } from '../src/app.js';
-import { VOUCHER_SIGNATURE } from '../src/config/credit.js';
+import { NOTE_SIGNATURE } from '../src/config/credit.js';
 import type { TokenPaymentConfig } from '../src/config/token.js';
 import type { Ledger } from '../src/credit/ledger.js';
 import type { ClaimDeposits } from '../src/hold/claim-deposits.js';
@@ -13,21 +13,21 @@ import { CLAIM_BURN } from '../src/hold/transfer-claims.js';
 import { openHoldStore } from '../src/node/hold-store.js';
 import { openLedger } from '../src/node/ledger.js';
 import type { HolderKeys } from '../src/credit/holder-keys.js';
-import { voucherKeyFromPem } from '../src/node/voucher-key.js';
+import { noteKeyFromPem } from '../src/node/note-key.js';
 
 export const TEST_CLIENT = 'client-1';
 
 /** One voucher key for all the tests of a file, since making an RSA key takes a moment. */
-export const TEST_VOUCHER_KEY = voucherKeyFromPem(
-  generateKeyPairSync('rsa', { modulusLength: VOUCHER_SIGNATURE.modulusBits }).privateKey.export({
+export const TEST_NOTE_KEY = noteKeyFromPem(
+  generateKeyPairSync('rsa', { modulusLength: NOTE_SIGNATURE.modulusBits }).privateKey.export({
     type: 'pkcs8',
     format: 'pem',
   }) as string,
 );
 
-function testKey(): ReturnType<typeof voucherKeyFromPem> {
-  return voucherKeyFromPem(
-    generateKeyPairSync('rsa', { modulusLength: VOUCHER_SIGNATURE.modulusBits }).privateKey.export({
+function testKey(): ReturnType<typeof noteKeyFromPem> {
+  return noteKeyFromPem(
+    generateKeyPairSync('rsa', { modulusLength: NOTE_SIGNATURE.modulusBits }).privateKey.export({
       type: 'pkcs8',
       format: 'pem',
     }) as string,
@@ -122,7 +122,7 @@ export function createTestApp(
   const app = createApp({
     env: {
       clientAddressHeader: null,
-      voucherKeyFile: 'unused-in-tests.pem',
+      noteKeyFile: 'unused-in-tests.pem',
       holderKeysDir: 'unused-in-tests',
       databaseFile: ':memory:',
       testnetPayers: [],
@@ -131,7 +131,7 @@ export function createTestApp(
       claimOperatorKeyFile: 'unused-in-tests.txt',
     },
     ledger,
-    voucherKey: TEST_VOUCHER_KEY,
+    noteKey: TEST_NOTE_KEY,
     holdStore,
     holderKeys: TEST_HOLDER_KEYS,
     claimDeposits,
