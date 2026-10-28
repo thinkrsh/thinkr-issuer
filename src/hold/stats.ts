@@ -43,14 +43,18 @@ export function holdTotals(store: HoldStore): HoldTotalsResponse {
   };
 }
 
-export function holdStats(store: HoldStore): HoldStatsResponse {
+/** The hold as a whole, with the buybacks burned for expired holder vouchers so far. */
+export function holdStats(
+  store: HoldStore,
+  burns: readonly ExpiryBurn[] = HOLD.expiry.burns,
+): HoldStatsResponse {
   const earners = store.earners();
   return {
     totals: holdTotals(store),
     days: holdDays(store),
-    earners: topEarners(store, earners),
+    earners: topEarners(store, earners, burns.at(-1)?.until ?? null),
     earnerCount: earners.length,
-    burns: burnsOf(HOLD.expiry.burns, store),
+    burns: burnsOf(burns, store),
   };
 }
 
@@ -89,14 +93,17 @@ function holdDays(store: HoldStore): HoldDay[] {
  * The wallets that earned the most, with the balance that the count takes for each, and where the
  * unclaimed holder vouchers of each one under 100K THKR stand.
  */
-function topEarners(store: HoldStore, earners: readonly HoldWallet[]): HoldEarner[] {
+function topEarners(
+  store: HoldStore,
+  earners: readonly HoldWallet[],
+  burnedUntil: number | null,
+): HoldEarner[] {
   const { lowest } = balancesOf(store);
   const { indexedAt, hour } = store.cursor();
   const below =
     indexedAt === null
       ? new Map<string, number>()
       : belowMinimumSince(store.transfers(), indexedAt);
-  const burnedUntil = HOLD.expiry.burns.at(-1)?.until ?? null;
   return [...earners]
     .sort(byEarned)
     .slice(0, HOLD.stats.maxEarners)

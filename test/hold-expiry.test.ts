@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { HOLD } from '../src/config/hold.js';
-import type { HoldStatsResponse, HoldWalletResponse } from '../src/contract.js';
+import type { HoldWalletResponse } from '../src/contract.js';
 import {
   UNIT_HOURS_PER_VOUCHER,
   UNITS_PER_THKR,
@@ -15,12 +15,11 @@ import {
   type HourAccrual,
 } from '../src/hold/accrual.js';
 import { expiryStateOf, lapseHour } from '../src/hold/expiry.js';
-import { burnsOf } from '../src/hold/stats.js';
+import { burnsOf, holdStats } from '../src/hold/stats.js';
 import type { HoldStore } from '../src/hold/store.js';
 import { claimableOf, walletStatus } from '../src/hold/status.js';
 import { countHours } from '../src/hold/sync.js';
 import { openHoldStore } from '../src/node/hold-store.js';
-import { createTestApp } from './helpers.js';
 
 const HOUR = HOLD.hourMs;
 const DAY = 24 * HOUR;
@@ -303,25 +302,21 @@ describe('the record of what expired, for a buyback', () => {
 });
 
 describe('GET /api/issuer/hold/stats with expiry', () => {
-  async function statsAt(store: HoldStore, now: number): Promise<HoldStatsResponse> {
-    const { app } = createTestApp(undefined, { holdStore: store, now: () => now });
-    return (await (await app.request('/api/issuer/hold/stats')).json()) as HoldStatsResponse;
-  }
-
-  it('names when a wallet that sold expires, then that it expired', async () => {
+  it('names when a wallet that sold expires, that it expired, then that a burn covered it', () => {
     const store = countedStore(SOLD_AT + 90 * 60_000);
-    const before = await statsAt(store, SOLD_AT + 90 * 60_000);
+    const before = holdStats(store, []);
     expect(before.earners.map(({ address, expiry }) => ({ address, expiry }))).toEqual([
       { address: BOB, expiry: null },
       { address: ALICE, expiry: { state: 'expiring', at: LAPSED_AT } },
     ]);
     readUntil(store, LAPSED_AT);
-    const after = await statsAt(store, LAPSED_AT);
-    expect(after.earners.find(({ address }) => address === ALICE)?.expiry).toEqual({
-      state: 'expired',
-      at: LAPSED_AT,
-    });
-    expect(after.burns).toEqual([]);
+    const alice = (burns: { until: number; txHash: string }[]) =>
+      holdStats(store, burns).earners.find(({ address }) => address === ALICE)?.expiry;
+    expect(alice([])).toEqual({ state: 'expired', at: LAPSED_AT });
+    expect(alice([{ until: LAPSED_AT - HOUR, txHash: `0x${'ab'.repeat(32)}` }])?.state).toBe(
+      'expired',
+    );
+    expect(alice([{ until: LAPSED_AT, txHash: `0x${'ab'.repeat(32)}` }])?.state).toBe('burned');
   });
 
   it('names the THKR that each buyback sent to the burn address, once the count read it', () => {

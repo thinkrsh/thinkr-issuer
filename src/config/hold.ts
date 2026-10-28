@@ -65,7 +65,14 @@ export const HOLD = {
      * it covers what expired up to its `until`. /holders marks the wallets that it covers as
      * burned, and `npm run expiry` on the server names what expired after the last one.
      */
-    burns: [] as readonly ExpiryBurn[],
+    burns: [
+      // The first (28 Oct 2026, "ok broo ini"): what expired from the launch to 10:00 UTC, 461.34
+      // holder vouchers or $184.54; 4,663,202.91 THKR from the wallet of the creator.
+      {
+        until: Date.UTC(2026, 9, 28, 10),
+        txHash: '0x33a61e6e4d7cfa8923fa01fe2e9a007b6714884fc10b61da3616559f7ab239e3',
+      },
+    ] as readonly ExpiryBurn[],
   },
   /**
    * The pool of each day since the launch (the owner, 27 Oct 2026: "kalo bisa 15% dari creator fee

@@ -186,7 +186,7 @@ describe('GET /api/issuer/hold/stats', () => {
       days: [],
       earners: [],
       earnerCount: 0,
-      burns: [],
+      burns: HOLD.expiry.burns.map((burn) => ({ ...burn, thkr: null, at: null })),
     });
     expect(stats.totals).toMatchObject({ earned: 0, countedUntil: null, dailyPoolUsd: null });
   });
