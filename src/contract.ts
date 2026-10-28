@@ -427,3 +427,45 @@ export interface HoldTotalsResponse {
   voucherUsd: number;
   countedUntil: number | null;
 }
+
+/** One UTC day of the hold. */
+export interface HoldDay {
+  /** 00:00 UTC of the day, in milliseconds since 1970. */
+  day: number;
+  /** Holder vouchers that the wallets earned in the hours of the day, with their parts. */
+  earned: number;
+  /** Whole holder vouchers that claims took in the day, fetched by the chat app or waiting. */
+  claimed: number;
+  /** The wallets that earned in the last hour counted of the day; 0 before its first hour. */
+  earning: number;
+  /** The pool of the day, in dollars, or null while it is not fixed. */
+  poolUsd: number | null;
+}
+
+/** One wallet that earned holder vouchers. */
+export interface HoldEarner {
+  /** In lower case. */
+  address: string;
+  /** The lowest balance of the last 24 hours, which the count takes, in the smallest unit of THKR. */
+  countedBalance: string;
+  /** Holder vouchers earned in all, with their parts. */
+  earned: number;
+}
+
+/**
+ * GET /api/issuer/hold/stats: the hold as a whole for the page of holder vouchers on thinkr.sh
+ * (28 Oct 2026), open to every origin. It names each wallet that earned and what it earned, which
+ * follows from the chain, and never what a wallet claimed: a claim comes from the chat app, so a
+ * list of claims would name the wallets that use it.
+ */
+export interface HoldStatsResponse {
+  totals: HoldTotalsResponse;
+  /** Whole holder vouchers that claims can take now, all wallets together. */
+  claimable: number;
+  /** Every day from the launch, the oldest first. */
+  days: HoldDay[];
+  /** The wallets that earned the most, the first first, at most `HOLD.stats.maxEarners`. */
+  earners: HoldEarner[];
+  /** Every wallet that earned, listed or not. */
+  earnerCount: number;
+}

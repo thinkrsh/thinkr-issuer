@@ -63,6 +63,12 @@ export interface HoldTicket {
   readonly requestHash: string | null;
 }
 
+/** When a ticket was made, and the whole holder vouchers that it took. */
+export interface TicketCount {
+  readonly createdAt: number;
+  readonly vouchers: number;
+}
+
 export interface ClaimInput {
   readonly wallet: string;
   readonly vouchers: number;
@@ -185,8 +191,14 @@ export interface HoldStore {
   /** Adds what each wallet earned in these hours, and moves the cursor to the last, in one step. */
   addHours: (accruals: readonly HourAccrual[]) => void;
   wallet: (address: string) => HoldWallet | null;
+  /** Every wallet that earned, in no order. */
+  earners: () => HoldWallet[];
   /** The newest hour counted, or null before the first. */
   lastHour: () => HourRecord | null;
+  /** Every hour counted, the oldest first. */
+  hours: () => HourRecord[];
+  /** Every ticket kept, fetched or not, the oldest first. */
+  ticketCounts: () => TicketCount[];
   /**
    * Takes `vouchers` whole holder vouchers of a wallet into a new ticket, in one step, when the
    * wallet earned them and no claim took them. The same claim again gives the same ticket.

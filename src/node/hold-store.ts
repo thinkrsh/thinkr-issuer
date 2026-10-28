@@ -24,6 +24,7 @@ import type {
   HourRecord,
   OpenTransferClaimResult,
   RedeemOutcome,
+  TicketCount,
   TransferClaim,
 } from '../hold/store.js';
 import type { CreatorFee, DayPool } from '../hold/fee-pool.js';
@@ -198,12 +199,19 @@ export function openHoldStore(file: string): HoldStore {
   const insertHour = db.prepare(
     'INSERT INTO hold_hours (hour, wallets, raw_units, paid_units) VALUES (?, ?, ?, ?)',
   );
-  const selectWallet = db.prepare(
-    'SELECT address, kind, earned_units, claimed, first_earned_at, last_claim_at ' +
-      'FROM hold_wallets WHERE address = ?',
+  const walletColumns = 'address, kind, earned_units, claimed, first_earned_at, last_claim_at';
+  const selectWallet = db.prepare(`SELECT ${walletColumns} FROM hold_wallets WHERE address = ?`);
+  const selectEarners = db.prepare(
+    `SELECT ${walletColumns} FROM hold_wallets WHERE earned_units != '0'`,
   );
   const selectLastHour = db.prepare(
     'SELECT hour, wallets, raw_units, paid_units FROM hold_hours ORDER BY hour DESC LIMIT 1',
+  );
+  const selectHours = db.prepare(
+    'SELECT hour, wallets, raw_units, paid_units FROM hold_hours ORDER BY hour',
+  );
+  const selectTicketCounts = db.prepare(
+    'SELECT created_at, vouchers FROM hold_tickets ORDER BY created_at',
   );
 
   const selectCountKey = db.prepare('SELECT start_at, version FROM hold_count WHERE id = 1');
@@ -497,15 +505,10 @@ export function openHoldStore(file: string): HoldStore {
     },
     wallet(address): HoldWallet | null {
       const row = selectWallet.get(address);
-      if (row === undefined) return null;
-      return {
-        address: text(row.address),
-        kind: row.kind === null ? null : kindOf(row.kind),
-        earnedUnits: BigInt(text(row.earned_units)),
-        claimed: integer(row.claimed),
-        firstEarnedAt: optionalInteger(row.first_earned_at),
-        lastClaimAt: optionalInteger(row.last_claim_at),
-      };
+      return row === undefined ? null : walletOf(row);
+    },
+    earners(): HoldWallet[] {
+      return selectEarners.all().map(walletOf);
     },
     claim(input): ClaimResult {
       return transaction(() => claimIn(input));
@@ -617,14 +620,39 @@ export function openHoldStore(file: string): HoldStore {
     },
     lastHour(): HourRecord | null {
       const row = selectLastHour.get();
-      if (row === undefined) return null;
-      return {
-        hour: integer(row.hour),
-        wallets: integer(row.wallets),
-        rawUnits: BigInt(text(row.raw_units)),
-        paidUnits: BigInt(text(row.paid_units)),
-      };
+      return row === undefined ? null : hourOf(row);
     },
+    hours(): HourRecord[] {
+      return selectHours.all().map(hourOf);
+    },
+    ticketCounts(): TicketCount[] {
+      return selectTicketCounts.all().map((row) => ({
+        createdAt: integer(row.created_at),
+        vouchers: integer(row.vouchers),
+      }));
+    },
+  };
+}
+
+/** A wallet as the store keeps it. */
+function walletOf(row: Record<string, unknown>): HoldWallet {
+  return {
+    address: text(row.address),
+    kind: row.kind === null ? null : kindOf(row.kind),
+    earnedUnits: BigInt(text(row.earned_units)),
+    claimed: integer(row.claimed),
+    firstEarnedAt: optionalInteger(row.first_earned_at),
+    lastClaimAt: optionalInteger(row.last_claim_at),
+  };
+}
+
+/** The count of an hour as the store keeps it. */
+function hourOf(row: Record<string, unknown>): HourRecord {
+  return {
+    hour: integer(row.hour),
+    wallets: integer(row.wallets),
+    rawUnits: BigInt(text(row.raw_units)),
+    paidUnits: BigInt(text(row.paid_units)),
   };
 }
 

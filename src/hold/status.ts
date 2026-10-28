@@ -10,13 +10,13 @@ import {
   UNIT_HOURS_PER_VOUCHER,
   vouchersOf,
 } from './accrual.js';
-import type { HoldStore } from './store.js';
+import type { HoldStore, HoldWallet } from './store.js';
 import { isExcluded } from './sync.js';
 
 const HOURS_PER_DAY = 24n;
 
 /** The balance of each wallet as the count last read it, and the lowest of the 24 hours before. */
-function balancesOf(store: Pick<HoldStore, 'cursor' | 'transfers'>): {
+export function balancesOf(store: Pick<HoldStore, 'cursor' | 'transfers'>): {
   now: Map<string, bigint>;
   lowest: Map<string, bigint>;
 } {
@@ -34,8 +34,18 @@ export function countedBalanceOf(
   store: Pick<HoldStore, 'cursor' | 'transfers'>,
   address: string,
 ): bigint {
+  return countedOf(balancesOf(store).lowest, address);
+}
+
+/** The THKR that the count takes for a wallet, out of the lowest balances of the last 24 hours. */
+export function countedOf(lowest: ReadonlyMap<string, bigint>, address: string): bigint {
   if (isExcluded(address)) return 0n;
-  return balancesOf(store).lowest.get(address) ?? 0n;
+  return lowest.get(address) ?? 0n;
+}
+
+/** Whole holder vouchers that the wallet earned and no claim took. */
+export function claimableOf(wallet: Pick<HoldWallet, 'earnedUnits' | 'claimed'>): number {
+  return Math.max(0, Number(wallet.earnedUnits / UNIT_HOURS_PER_VOUCHER) - wallet.claimed);
 }
 
 export function walletStatus(store: HoldStore, address: string): HoldWalletResponse {
@@ -60,7 +70,7 @@ export function walletStatus(store: HoldStore, address: string): HoldWalletRespo
     poolShare: poolShareOf(last?.rawUnits ?? 0n, last?.paidUnits ?? 0n),
     earned: vouchersOf(earnedUnits),
     claimed,
-    claimable: Math.max(0, Number(earnedUnits / UNIT_HOURS_PER_VOUCHER) - claimed),
+    claimable: claimableOf({ earnedUnits, claimed }),
     lastClaimAt: clock.lastClaimAt,
     pausesAt: pausesAt(clock),
     countedUntil: hour,

@@ -120,6 +120,18 @@ export const HOLD = {
   /** Bytes of the secret of a ticket, which only the chat app holds; the dashboard sees its hash. */
   ticketBytes: 32,
   /**
+   * GET /api/issuer/hold/stats, for the page of holder vouchers on thinkr.sh (28 Oct 2026: "ini
+   * buat public di website jadi holder bisa cek"). Any origin may read it: it holds the totals and
+   * what each wallet earned, which follows from the chain, and its request carries no credentials.
+   */
+  stats: {
+    allowOrigin: '*',
+    /** How long one count of the stats answers every reader, so that readers cost no more counts. */
+    cacheMs: 60_000,
+    /** The most wallets that it lists, those that earned the most first. */
+    maxEarners: 1_000,
+  },
+  /**
    * The claim by transfer, for a wallet in an app that signs no message (25 Oct 2026): the wallet
    * sends an amount of THKR that names its claim to the burn address, and the count takes the
    * claim once it reads that transfer on the chain.

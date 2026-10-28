@@ -8,7 +8,8 @@
 // For the chat app at chat.thinkr.sh, which knows the secret of the ticket and no wallet:
 // GET /api/issuer/hold/tickets/<hash> gives what the ticket holds and the key of its month, and
 // POST /api/issuer/hold/tickets/redeem answers its blinded vouchers with blind signatures.
-// GET /api/issuer/hold/totals gives the hold as a whole, with no wallet (decision 191).
+// GET /api/issuer/hold/totals gives the hold as a whole, with no wallet (decision 191), and
+// GET /api/issuer/hold/stats gives it by day with the wallets that earned the most, for any page.
 // The issuer never sees a voucher without its blind, so a claim does not link to a chat.
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
@@ -23,6 +24,7 @@ import {
   type HoldClaimResponse,
   type HoldQuoteResponse,
   type HoldRedeemResponse,
+  type HoldStatsResponse,
   type HoldTicketResponse,
   type HoldTotalsResponse,
   type HoldTransferClaimResponse,
@@ -31,8 +33,7 @@ import {
 import { holderKeyAt, type HolderKeys } from '../credit/holder-keys.js';
 import { assertSignedBy, requestHash } from '../credit/payment.js';
 import type { VoucherKey } from '../credit/voucher-key.js';
-import { vouchersOf } from '../hold/accrual.js';
-import { dayOfHour, dayPoolUsd } from '../hold/fee-pool.js';
+import { holdStats, holdTotals } from '../hold/stats.js';
 import { walletStatus } from '../hold/status.js';
 import type { HoldStore, HoldTicket } from '../hold/store.js';
 import { newClaimId, type ClaimDeposits } from '../hold/claim-deposits.js';
@@ -56,6 +57,7 @@ const addressSchema = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
 const ticketHashSchema = z.string().regex(/^[0-9a-f]{64}$/);
 
 export function createHoldRoute(deps: HoldRouteDeps): Hono {
+  const stats = cachedStats(deps);
   return new Hono()
     .basePath('/issuer/hold')
     .get('/wallets/:address', (c) => {
@@ -190,23 +192,26 @@ export function createHoldRoute(deps: HoldRouteDeps): Hono {
     })
     .get('/totals', (c) => {
       takeRequest(deps, c);
-      const totals = deps.holdStore.totals();
-      const countedUntil = deps.holdStore.cursor().hour;
-      return c.json<HoldTotalsResponse>({
-        earned: vouchersOf(totals.earnedUnits),
-        issued: totals.issued,
-        pending: totals.pending,
-        earning: totals.earning,
-        dailyPoolUsd: poolOfCount(deps.holdStore, countedUntil),
-        voucherUsd: HOLD.voucherUsd,
-        countedUntil,
-      });
+      return c.json<HoldTotalsResponse>(holdTotals(deps.holdStore));
+    })
+    .get('/stats', (c) => {
+      // Set first, so that a page of another origin reads a refusal too.
+      c.header('Access-Control-Allow-Origin', HOLD.stats.allowOrigin);
+      takeRequest(deps, c);
+      return c.json<HoldStatsResponse>(stats());
     });
 }
 
-/** The pool of the day of the last hour counted, in dollars, or null before the first count. */
-function poolOfCount(store: HoldStore, countedUntil: number | null): number | null {
-  return countedUntil === null ? null : dayPoolUsd(dayOfHour(countedUntil), store.dayPools());
+/** The stats of the hold, counted again once `HOLD.stats.cacheMs` passed since the last count. */
+function cachedStats(deps: Pick<HoldRouteDeps, 'now' | 'holdStore'>): () => HoldStatsResponse {
+  let last: { readonly at: number; readonly stats: HoldStatsResponse } | null = null;
+  return () => {
+    const at = deps.now();
+    if (last === null || at - last.at >= HOLD.stats.cacheMs) {
+      last = { at, stats: holdStats(deps.holdStore) };
+    }
+    return last.stats;
+  };
 }
 
 function takeRequest(deps: HoldRouteDeps, c: Context): void {
