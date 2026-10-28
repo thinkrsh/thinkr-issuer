@@ -10,6 +10,14 @@ const HOUR_MS = 60 * 60_000;
 /** The address of nobody: THKR minted at the launch comes from it. */
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
+/** One buyback of THKR, burned for the holder vouchers that expired up to an hour. */
+export interface ExpiryBurn {
+  /** The top of the hour that `npm run expiry` named, in milliseconds since 1970. */
+  readonly until: number;
+  /** The transaction that sent the THKR bought back to the burn address. */
+  readonly txHash: string;
+}
+
 export const HOLD = {
   /**
    * When the count starts: the launch of THKR on Pons V2, block 95,269,648 at 17:02:19 UTC on
@@ -20,10 +28,12 @@ export const HOLD = {
   startAt: Date.UTC(2026, 9, 22, 17, 2, 19),
   /**
    * The version of the rules of the count. A change here makes the issuer count every hour again
-   * from the start (hold/sync.ts), and keeps every claim. 2 since 27 Oct 2026, when the pool of every
-   * day from the launch became a share of the creator fees ("hitung ulang aja"); 1 had $250 a day.
+   * from the start (hold/sync.ts), and keeps every claim. 3 since 28 Oct 2026, when unclaimed holder
+   * vouchers began to expire, counted from the launch (`expiry`); 2 since 27 Oct 2026, when the pool
+   * of every day from the launch became a share of the creator fees ("hitung ulang aja"); 1 had
+   * $250 a day.
    */
-  countVersion: 2,
+  countVersion: 3,
   /** One holder voucher a day for each 1M THKR ("sehari sehari", decision 189). */
   thkrPerVoucher: 1_000_000,
   /** The least THKR that earns ("ya 100K dulu nanti bisa berubah", decision 189). */
@@ -34,6 +44,29 @@ export const HOLD = {
   hourMs: HOUR_MS,
   /** A wallet stops earning after this many days without a claim, until it claims (decision 201). */
   maxUnclaimedDays: 30,
+  /**
+   * The expiry of the holder vouchers that a wallet has not claimed (decision 256, and
+   * docs/HOLDER-VOUCHER-EXPIRY.md), counted from the launch (the owner, 28 Oct 2026: "itung sejak
+   * awal lonching brooo"), for holders who sold all their THKR. A claim takes the oldest holder
+   * vouchers of its wallet first; a claimed holder voucher is blind and never expires.
+   */
+  expiry: {
+    /** Days after the hour that earned it ("2 minggu aja bro expired nya 14hari"). */
+    earnedDays: 14,
+    /**
+     * Hours that the balance of the wallet stays under `minimumThkr`, after which every holder
+     * voucher of it expires at once. A move of THKR counts as a sale: the issuer cannot tell
+     * whether the wallet that takes it is of the same holder.
+     */
+    underMinimumHours: 24,
+    /**
+     * Each buyback of THKR worth the holder vouchers that expired, burned at the burn address (the
+     * owner, 28 Oct 2026: "kita buyback THKR senilai yang hangus lalu di burn"), the oldest first:
+     * it covers what expired up to its `until`. /holders marks the wallets that it covers as
+     * burned, and `npm run expiry` on the server names what expired after the last one.
+     */
+    burns: [] as readonly ExpiryBurn[],
+  },
   /**
    * The pool of each day since the launch (the owner, 27 Oct 2026: "kalo bisa 15% dari creator fee
    * ... agar tidak lebih dari 15%", "15% juga diitung dari hari kemarin nya", "Gas", then "hitung

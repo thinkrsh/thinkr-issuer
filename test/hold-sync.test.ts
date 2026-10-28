@@ -240,6 +240,7 @@ describe('GET /api/issuer/hold/wallets/<address>', () => {
       poolShare: 1,
       earned: 2.041666,
       claimed: 0,
+      expired: 0,
       claimable: 2,
       lastClaimAt: null,
       pausesAt: FIRST_EARNING + 30 * 24 * HOUR,

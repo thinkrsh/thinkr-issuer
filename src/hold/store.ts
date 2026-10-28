@@ -1,5 +1,5 @@
 // What the issuer keeps for the hold of THKR: every transfer of THKR, how far the count read the
-// chain, the creator fees and the pool of each day that they fixed, the kind of each wallet, what each wallet earned and claimed, the total of each hour, and
+// chain, the creator fees and the pool of each day that they fixed, the kind of each wallet, what each wallet earned by each hour, claimed, and lost to expiry, the total of each hour, and
 // the ticket of each claim, with the deposit address of each claim by transfer. A ticket names the
 // hash of the blinded vouchers it gave, never a voucher, so a claim does not link to the chats that
 // its credit pays for.
@@ -34,6 +34,8 @@ export interface HoldWallet {
   readonly kind: WalletKind | null;
   /** What it earned in all, in unit-hours of THKR (hold/accrual.ts). */
   readonly earnedUnits: bigint;
+  /** What of it expired before a claim took it, in unit-hours (hold/expiry.ts). */
+  readonly expiredUnits: bigint;
   /** The whole holder vouchers that its claims took. */
   readonly claimed: number;
   readonly firstEarnedAt: number | null;
@@ -166,6 +168,11 @@ export interface HoldStore {
   transfers: () => HoldTransfer[];
   /** The transfers kept from or to `address`, in the order of the chain. */
   transfersOf: (address: string) => HoldTransfer[];
+  /**
+   * The unit-hours that expired at the hours after `after` up to `until`, or from the start when
+   * `after` is null (hold/expiry.ts).
+   */
+  expiredBetween: (after: number | null, until: number) => bigint;
   feeCursor: () => FeeCursor;
   /** Keeps the creator fees read up to `block`, whose time is `at`, and moves its cursor, in one step. */
   addCreatorFees: (fees: readonly CreatorFee[], block: number, at: number) => void;

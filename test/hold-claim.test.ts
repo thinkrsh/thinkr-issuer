@@ -41,6 +41,7 @@ function issuerWith(vouchers: number, now = (): number => NOW): TestApp {
     {
       hour: NOW - HOLD.hourMs,
       credits: new Map([[WALLET, UNIT_HOURS_PER_VOUCHER * BigInt(vouchers)]]),
+      lapsed: new Set<string>(),
       rawUnits: UNIT_HOURS_PER_VOUCHER * BigInt(vouchers),
       paidUnits: UNIT_HOURS_PER_VOUCHER * BigInt(vouchers),
     },

@@ -292,6 +292,8 @@ export interface HoldWalletResponse {
   earned: number;
   /** Whole holder vouchers that claims took. */
   claimed: number;
+  /** Holder vouchers that expired before a claim took them, with their parts. */
+  expired: number;
   /** Whole holder vouchers that a claim can take now. */
   claimable: number;
   /** In milliseconds since 1970, or null. */
@@ -442,6 +444,28 @@ export interface HoldDay {
   poolUsd: number | null;
 }
 
+/**
+ * Where the unclaimed holder vouchers of a wallet under 100K THKR stand (decision 256): `expiring`
+ * until `at`, `expired` from `at`, and `burned` once a buyback of THKR burned for what expired by
+ * then. It follows from the chain and `HOLD.expiry.burns` alone, and so it says nothing of whether
+ * the wallet had any left.
+ */
+export interface HoldExpiry {
+  state: 'expiring' | 'expired' | 'burned';
+  /** The top of the hour, a day after its balance went under 100K THKR. */
+  at: number;
+}
+
+/** One buyback of THKR, burned for the holder vouchers that expired up to `until`. */
+export interface HoldBurn {
+  until: number;
+  txHash: string;
+  /** THKR that it sent to the burn address, in the smallest unit, or null before the count read it. */
+  thkr: string | null;
+  /** When it sent them, or null before the count read it. */
+  at: number | null;
+}
+
 /** One wallet that earned holder vouchers. */
 export interface HoldEarner {
   /** In lower case. */
@@ -450,6 +474,8 @@ export interface HoldEarner {
   countedBalance: string;
   /** Holder vouchers earned in all, with their parts. */
   earned: number;
+  /** Null while it holds 100K THKR or more. */
+  expiry: HoldExpiry | null;
 }
 
 /**
@@ -460,12 +486,12 @@ export interface HoldEarner {
  */
 export interface HoldStatsResponse {
   totals: HoldTotalsResponse;
-  /** Whole holder vouchers that claims can take now, all wallets together. */
-  claimable: number;
   /** Every day from the launch, the oldest first. */
   days: HoldDay[];
   /** The wallets that earned the most, the first first, at most `HOLD.stats.maxEarners`. */
   earners: HoldEarner[];
   /** Every wallet that earned, listed or not. */
   earnerCount: number;
+  /** Every buyback burned for expired holder vouchers, the oldest first. */
+  burns: HoldBurn[];
 }

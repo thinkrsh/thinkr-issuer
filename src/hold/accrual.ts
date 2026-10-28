@@ -5,7 +5,8 @@
 // the pool of that hour; past it, every part falls in proportion. A wallet with no claim for 30 days
 // earns nothing until it claims. The count keeps unit-hours of THKR, exact: 24M THKR-hours make one
 // holder voucher, so 700K THKR held 10 days makes 7 holder vouchers, no less. The pool of an hour
-// follows the creator fees of the day before (hold/fee-pool.ts).
+// follows the creator fees of the day before (hold/fee-pool.ts). Each hour also names the wallets
+// that held under 100K THKR for a whole day, whose unclaimed holder vouchers expire (hold/expiry.ts).
 import { HOLD } from '../config/hold.js';
 
 /** One transfer of THKR, in the order of the chain. */
@@ -34,6 +35,11 @@ export interface HourAccrual {
   readonly hour: number;
   /** The unit-hours of THKR that each wallet earned in it: one per smallest unit of THKR. */
   readonly credits: ReadonlyMap<string, bigint>;
+  /**
+   * The wallets that earned before, and whose balance stayed under 100K THKR through the
+   * `HOLD.expiry.underMinimumHours` up to the hour: what they have not claimed expires at it.
+   */
+  readonly lapsed: ReadonlySet<string>;
   /** What the wallets would earn with no pool, and what they earned, in unit-hours. */
   readonly rawUnits: bigint;
   readonly paidUnits: bigint;
@@ -102,23 +108,20 @@ export function vouchersOf(unitHours: bigint): number {
 /** The count of each hour, in order. */
 export function planAccruals(input: AccrualInput): HourAccrual[] {
   const clocks = new Map(input.clocks);
-  const base = new Map<string, bigint>();
-  let next = 0;
+  const counted = windowsOf(input.transfers, HOLD.countHours);
+  const underMinimum = windowsOf(input.transfers, HOLD.expiry.underMinimumHours);
   return input.hours.map((hour) => {
-    const windowStart = hour - HOLD.countHours * HOLD.hourMs;
-    for (; next < input.transfers.length; next += 1) {
-      const transfer = input.transfers[next];
-      if (transfer === undefined || transfer.at > windowStart) break;
-      apply(base, transfer);
-    }
-    const lowest = lowestBalances(base, input.transfers, next, hour);
     const raw = new Map<string, bigint>();
-    for (const [address, balance] of lowest) {
+    for (const [address, balance] of counted(hour).lowest) {
       if (!input.mayEarn(address) || isPaused(clocks.get(address), hour)) continue;
       const units = hourUnitsOf(balance);
       if (units > 0n) raw.set(address, units);
     }
-    const accrual = shareThePool(hour, raw, input.hourPool(hour));
+    const earnedBefore = [...clocks]
+      .filter(([, clock]) => clock.firstEarnedAt !== null)
+      .map(([address]) => address);
+    const lapsed = lapsedOf(underMinimum(hour).highest, earnedBefore);
+    const accrual = shareThePool(hour, raw, input.hourPool(hour), lapsed);
     for (const address of accrual.credits.keys()) {
       const clock = clocks.get(address);
       if ((clock?.firstEarnedAt ?? null) === null) {
@@ -134,43 +137,85 @@ export function balancesAt(
   transfers: readonly HoldTransfer[],
   at: number,
 ): { now: Map<string, bigint>; lowest: Map<string, bigint> } {
-  const windowStart = at - HOLD.countHours * HOLD.hourMs;
-  const base = new Map<string, bigint>();
-  let next = 0;
-  for (; next < transfers.length; next += 1) {
-    const transfer = transfers[next];
-    if (transfer === undefined || transfer.at > windowStart) break;
-    apply(base, transfer);
-  }
-  const now = new Map(base);
-  for (let index = next; index < transfers.length; index += 1) {
+  const window = windowsOf(transfers, HOLD.countHours)(at);
+  const now = new Map(window.base);
+  for (let index = window.next; index < transfers.length; index += 1) {
     const transfer = transfers[index];
     if (transfer === undefined || transfer.at > at) break;
     apply(now, transfer);
   }
-  return { now, lowest: lowestBalances(base, transfers, next, at) };
+  return { now, lowest: window.lowest };
 }
 
-/** The balances of the window start, lowered by every balance that each transfer left behind. */
-function lowestBalances(
-  base: ReadonlyMap<string, bigint>,
+/**
+ * When the balance of each wallet under 100K THKR at `at` went under it, to stay under it since:
+ * what the wallet has not claimed expires a day after (hold/expiry.ts).
+ */
+export function belowMinimumSince(
   transfers: readonly HoldTransfer[],
-  from: number,
-  hour: number,
-): Map<string, bigint> {
-  const running = new Map(base);
-  const lowest = new Map(base);
-  for (let index = from; index < transfers.length; index += 1) {
-    const transfer = transfers[index];
-    if (transfer === undefined || transfer.at > hour) break;
-    apply(running, transfer);
+  at: number,
+): Map<string, number> {
+  const balances = new Map<string, bigint>();
+  const since = new Map<string, number>();
+  for (const transfer of transfers) {
+    if (transfer.at > at) break;
+    apply(balances, transfer);
     for (const address of [transfer.from, transfer.to]) {
-      const now = running.get(address) ?? 0n;
-      const low = lowest.get(address) ?? 0n;
-      lowest.set(address, now < low ? now : low);
+      if ((balances.get(address) ?? 0n) >= MINIMUM_UNITS) since.delete(address);
+      else if (!since.has(address)) since.set(address, transfer.at);
     }
   }
-  return lowest;
+  return since;
+}
+
+function lapsedOf(highest: ReadonlyMap<string, bigint>, wallets: Iterable<string>): Set<string> {
+  const lapsed = new Set<string>();
+  for (const address of wallets) {
+    if ((highest.get(address) ?? 0n) < MINIMUM_UNITS) lapsed.add(address);
+  }
+  return lapsed;
+}
+
+/** The balances in a window of hours: those at its start, and the lowest and highest in it. */
+interface Window {
+  readonly base: ReadonlyMap<string, bigint>;
+  /** The index of the first transfer after the start of the window. */
+  readonly next: number;
+  readonly lowest: Map<string, bigint>;
+  readonly highest: Map<string, bigint>;
+}
+
+/**
+ * The window of `hours` hours that ends at each time asked, the times in order: each asks only the
+ * transfers of its own window again.
+ */
+function windowsOf(transfers: readonly HoldTransfer[], hours: number): (end: number) => Window {
+  const base = new Map<string, bigint>();
+  let next = 0;
+  return (end) => {
+    const start = end - hours * HOLD.hourMs;
+    for (; next < transfers.length; next += 1) {
+      const transfer = transfers[next];
+      if (transfer === undefined || transfer.at > start) break;
+      apply(base, transfer);
+    }
+    const running = new Map(base);
+    const lowest = new Map(base);
+    const highest = new Map(base);
+    for (let index = next; index < transfers.length; index += 1) {
+      const transfer = transfers[index];
+      if (transfer === undefined || transfer.at > end) break;
+      apply(running, transfer);
+      for (const address of [transfer.from, transfer.to]) {
+        const now = running.get(address) ?? 0n;
+        const low = lowest.get(address) ?? 0n;
+        const high = highest.get(address) ?? 0n;
+        lowest.set(address, now < low ? now : low);
+        highest.set(address, now > high ? now : high);
+      }
+    }
+    return { base, next, lowest, highest };
+  };
 }
 
 function apply(balances: Map<string, bigint>, transfer: HoldTransfer): void {
@@ -183,6 +228,7 @@ function shareThePool(
   hour: number,
   raw: ReadonlyMap<string, bigint>,
   poolUnits: bigint,
+  lapsed: ReadonlySet<string>,
 ): HourAccrual {
   const rawUnits = [...raw.values()].reduce((sum, units) => sum + units, 0n);
   const credits = new Map<string, bigint>();
@@ -193,5 +239,5 @@ function shareThePool(
     credits.set(address, share);
     paidUnits += share;
   }
-  return { hour, credits, rawUnits, paidUnits };
+  return { hour, credits, lapsed, rawUnits, paidUnits };
 }

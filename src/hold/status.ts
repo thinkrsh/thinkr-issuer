@@ -1,5 +1,5 @@
 // The hold of one wallet, as the dashboard shows it: its balance, the balance that the count takes,
-// whether it earns and why, and what it earned, claimed, and can claim.
+// whether it earns and why, and what it earned, claimed, lost to expiry, and can claim.
 import { HOLD } from '../config/hold.js';
 import type { HoldReason, HoldWalletResponse } from '../contract.js';
 import {
@@ -43,9 +43,12 @@ export function countedOf(lowest: ReadonlyMap<string, bigint>, address: string):
   return lowest.get(address) ?? 0n;
 }
 
-/** Whole holder vouchers that the wallet earned and no claim took. */
-export function claimableOf(wallet: Pick<HoldWallet, 'earnedUnits' | 'claimed'>): number {
-  return Math.max(0, Number(wallet.earnedUnits / UNIT_HOURS_PER_VOUCHER) - wallet.claimed);
+/** Whole holder vouchers that the wallet earned and no claim took, and that did not expire. */
+export function claimableOf(
+  wallet: Pick<HoldWallet, 'earnedUnits' | 'expiredUnits' | 'claimed'>,
+): number {
+  const left = (wallet.earnedUnits - wallet.expiredUnits) / UNIT_HOURS_PER_VOUCHER;
+  return Math.max(0, Number(left) - wallet.claimed);
 }
 
 export function walletStatus(store: HoldStore, address: string): HoldWalletResponse {
@@ -59,6 +62,7 @@ export function walletStatus(store: HoldStore, address: string): HoldWalletRespo
     lastClaimAt: wallet?.lastClaimAt ?? null,
   };
   const earnedUnits = wallet?.earnedUnits ?? 0n;
+  const expiredUnits = wallet?.expiredUnits ?? 0n;
   const claimed = wallet?.claimed ?? 0;
   const last = store.lastHour();
   return {
@@ -70,7 +74,8 @@ export function walletStatus(store: HoldStore, address: string): HoldWalletRespo
     poolShare: poolShareOf(last?.rawUnits ?? 0n, last?.paidUnits ?? 0n),
     earned: vouchersOf(earnedUnits),
     claimed,
-    claimable: claimableOf({ earnedUnits, claimed }),
+    expired: vouchersOf(expiredUnits),
+    claimable: claimableOf({ earnedUnits, expiredUnits, claimed }),
     lastClaimAt: clock.lastClaimAt,
     pausesAt: pausesAt(clock),
     countedUntil: hour,

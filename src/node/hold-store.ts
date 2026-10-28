@@ -5,12 +5,9 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import {
-  UNIT_HOURS_PER_VOUCHER,
-  type HoldTransfer,
-  type HourAccrual,
-  type WalletClock,
-} from '../hold/accrual.js';
+import type { HoldTransfer, HourAccrual, WalletClock } from '../hold/accrual.js';
+import { earnedExpiryHour, expiredAfter } from '../hold/expiry.js';
+import { claimableOf as claimableOfWallet } from '../hold/status.js';
 import type {
   ClaimInput,
   ClaimResult,
@@ -69,6 +66,18 @@ const SCHEMA = `
     raw_units TEXT NOT NULL,
     paid_units TEXT NOT NULL
   ) STRICT;
+  CREATE TABLE IF NOT EXISTS hold_credits (
+    hour INTEGER NOT NULL,
+    address TEXT NOT NULL,
+    earned_units TEXT NOT NULL,
+    PRIMARY KEY (hour, address)
+  ) STRICT;
+  CREATE TABLE IF NOT EXISTS hold_expiries (
+    hour INTEGER NOT NULL,
+    address TEXT NOT NULL,
+    units TEXT NOT NULL,
+    PRIMARY KEY (hour, address)
+  ) STRICT;
   CREATE TABLE IF NOT EXISTS hold_tickets (
     hash TEXT PRIMARY KEY,
     wallet TEXT NOT NULL,
@@ -79,6 +88,7 @@ const SCHEMA = `
     request_hash TEXT,
     redeemed_at INTEGER
   ) STRICT;
+  CREATE INDEX IF NOT EXISTS hold_tickets_wallet ON hold_tickets (wallet, created_at);
   CREATE TABLE IF NOT EXISTS hold_transfer_claims (
     ticket_hash TEXT PRIMARY KEY,
     wallet TEXT NOT NULL,
@@ -122,9 +132,11 @@ const SCHEMA = `
  * Columns that came after a table: a store from before gets each one at its default. The count of
  * holder vouchers that a claim by transfer asks for came on 27 Oct 2026; null asks for all. The
  * deposit addresses came the same day; a claim of the burn address has none. The version of the
- * rules of the count came that day too; a count from before took version 1.
+ * rules of the count came that day too; a count from before took version 1. What a wallet lost to
+ * expiry came on 28 Oct 2026, with version 3 of the count, which counts it again from the launch.
  */
 const ADDED_COLUMNS: readonly AddedColumn[] = [
+  { table: 'hold_wallets', column: 'expired_units', definition: "TEXT NOT NULL DEFAULT '0'" },
   { table: 'hold_transfer_claims', column: 'wanted', definition: 'INTEGER' },
   { table: 'hold_transfer_claims', column: 'claim_id', definition: 'TEXT' },
   { table: 'hold_transfer_claims', column: 'deposit', definition: 'TEXT' },
@@ -137,15 +149,23 @@ const ADDED_INDEXES = `
   CREATE INDEX IF NOT EXISTS hold_transfer_claims_deposit ON hold_transfer_claims (deposit);
 `;
 
-/** Opens the store in `file`, or in memory for ':memory:', and makes its tables when missing. */
-export function openHoldStore(file: string): HoldStore {
+/**
+ * Opens the store in `file`, or in memory for ':memory:', and makes its tables when missing. A store
+ * opened to read only, such as by `npm run expiry` beside the issuer that runs, writes nothing.
+ */
+export function openHoldStore(file: string, { readOnly = false } = {}): HoldStore {
+  if (readOnly) return holdStoreOf(new DatabaseSync(file, { readOnly }));
   if (file !== IN_MEMORY) mkdirSync(dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
   db.exec(SCHEMA);
   addMissingColumns(db, ADDED_COLUMNS);
   db.exec(ADDED_INDEXES);
+  return holdStoreOf(db);
+}
 
+/** The store over an open database whose tables exist. */
+function holdStoreOf(db: DatabaseSync): HoldStore {
   const selectCursor = db.prepare('SELECT block, indexed_at, hour FROM hold_cursor WHERE id = 1');
   const insertTransfer = db.prepare(
     'INSERT OR IGNORE INTO hold_transfers ' +
@@ -199,7 +219,25 @@ export function openHoldStore(file: string): HoldStore {
   const insertHour = db.prepare(
     'INSERT INTO hold_hours (hour, wallets, raw_units, paid_units) VALUES (?, ?, ?, ?)',
   );
-  const walletColumns = 'address, kind, earned_units, claimed, first_earned_at, last_claim_at';
+  const insertCredit = db.prepare(
+    'INSERT INTO hold_credits (hour, address, earned_units) VALUES (?, ?, ?)',
+  );
+  const selectCreditsAt = db.prepare(
+    'SELECT address, earned_units FROM hold_credits WHERE hour = ?',
+  );
+  const selectClaimedBy = db.prepare(
+    'SELECT COALESCE(SUM(vouchers), 0) AS claimed FROM hold_tickets ' +
+      'WHERE wallet = ? AND created_at <= ?',
+  );
+  const setExpired = db.prepare('UPDATE hold_wallets SET expired_units = ? WHERE address = ?');
+  const insertExpiry = db.prepare(
+    'INSERT INTO hold_expiries (hour, address, units) VALUES (?, ?, ?)',
+  );
+  const selectExpiredBetween = db.prepare(
+    'SELECT units FROM hold_expiries WHERE hour > ? AND hour <= ?',
+  );
+  const walletColumns =
+    'address, kind, earned_units, expired_units, claimed, first_earned_at, last_claim_at';
   const selectWallet = db.prepare(`SELECT ${walletColumns} FROM hold_wallets WHERE address = ?`);
   const selectEarners = db.prepare(
     `SELECT ${walletColumns} FROM hold_wallets WHERE earned_units != '0'`,
@@ -220,9 +258,11 @@ export function openHoldStore(file: string): HoldStore {
       'ON CONFLICT (id) DO UPDATE SET start_at = excluded.start_at, version = excluded.version',
   );
   const forgetEarned = db.prepare(
-    "UPDATE hold_wallets SET earned_units = '0', first_earned_at = NULL",
+    "UPDATE hold_wallets SET earned_units = '0', expired_units = '0', first_earned_at = NULL",
   );
   const forgetHours = db.prepare('DELETE FROM hold_hours');
+  const forgetCredits = db.prepare('DELETE FROM hold_credits');
+  const forgetExpiries = db.prepare('DELETE FROM hold_expiries');
   const forgetHour = db.prepare('UPDATE hold_cursor SET hour = NULL WHERE id = 1');
   const selectTicket = db.prepare(
     'SELECT hash, wallet, vouchers, month, created_at, expires_at, request_hash ' +
@@ -329,12 +369,36 @@ export function openHoldStore(file: string): HoldStore {
     return expired.length;
   };
 
-  /** Whole holder vouchers that a wallet earned and no claim took. */
+  /** Whole holder vouchers that a wallet earned and no claim took, and that did not expire. */
   const claimableOf = (wallet: string): number => {
     const row = selectWallet.get(wallet);
-    const earned = BigInt(optionalText(row?.earned_units) ?? '0');
-    const claimed = row === undefined ? 0 : integer(row.claimed);
-    return Math.max(0, Number(earned / UNIT_HOURS_PER_VOUCHER) - claimed);
+    return row === undefined ? 0 : claimableOfWallet(walletOf(row));
+  };
+
+  /**
+   * Expires, at the hour of `accrual`, what no claim took in time: of each wallet credited at the
+   * hour 14 days before, what it had earned by then, and of each wallet in `lapsed`, all it earned.
+   * Only the claims made by the hour count, so that a count from the start again gives the same.
+   */
+  const expireAt = (accrual: HourAccrual): void => {
+    const due = new Map<string, bigint>();
+    for (const row of selectCreditsAt.all(earnedExpiryHour(accrual.hour))) {
+      due.set(text(row.address), BigInt(text(row.earned_units)));
+    }
+    for (const address of accrual.lapsed) {
+      const row = selectWallet.get(address);
+      if (row !== undefined) due.set(address, walletOf(row).earnedUnits);
+    }
+    for (const [address, units] of due) {
+      const row = selectWallet.get(address);
+      if (row === undefined) continue;
+      const before = walletOf(row).expiredUnits;
+      const claimed = integer(selectClaimedBy.get(address, accrual.hour)?.claimed);
+      const expired = expiredAfter(units, claimed, before);
+      if (expired === before) continue;
+      setExpired.run(expired.toString(), address);
+      insertExpiry.run(accrual.hour, address, (expired - before).toString());
+    }
   };
 
   /** A claim, inside the transaction of its caller. */
@@ -480,6 +544,8 @@ export function openHoldStore(file: string): HoldStore {
       transaction(() => {
         forgetEarned.run();
         forgetHours.run();
+        forgetCredits.run();
+        forgetExpiries.run();
         forgetHour.run();
         setCountKey.run(key.startAt, key.version);
       });
@@ -491,7 +557,9 @@ export function openHoldStore(file: string): HoldStore {
         for (const accrual of accruals) {
           for (const [address, units] of accrual.credits) {
             const before = BigInt(optionalText(selectEarned.get(address)?.earned_units) ?? '0');
-            setEarned.run(address, (before + units).toString(), accrual.hour);
+            const earned = (before + units).toString();
+            setEarned.run(address, earned, accrual.hour);
+            insertCredit.run(accrual.hour, address, earned);
           }
           insertHour.run(
             accrual.hour,
@@ -499,6 +567,7 @@ export function openHoldStore(file: string): HoldStore {
             accrual.rawUnits.toString(),
             accrual.paidUnits.toString(),
           );
+          expireAt(accrual);
         }
         moveHour.run(last.hour);
       });
@@ -618,6 +687,11 @@ export function openHoldStore(file: string): HoldStore {
         earning: last === undefined ? 0 : integer(last.wallets),
       };
     },
+    expiredBetween(after, until) {
+      return selectExpiredBetween
+        .all(after ?? Number.MIN_SAFE_INTEGER, until)
+        .reduce((sum, row) => sum + BigInt(text(row.units)), 0n);
+    },
     lastHour(): HourRecord | null {
       const row = selectLastHour.get();
       return row === undefined ? null : hourOf(row);
@@ -640,6 +714,7 @@ function walletOf(row: Record<string, unknown>): HoldWallet {
     address: text(row.address),
     kind: row.kind === null ? null : kindOf(row.kind),
     earnedUnits: BigInt(text(row.earned_units)),
+    expiredUnits: BigInt(text(row.expired_units)),
     claimed: integer(row.claimed),
     firstEarnedAt: optionalInteger(row.first_earned_at),
     lastClaimAt: optionalInteger(row.last_claim_at),

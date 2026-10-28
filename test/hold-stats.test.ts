@@ -57,12 +57,14 @@ function storeWithHold(): HoldStore {
         [ALICE, 2n * VOUCHER],
         [BOB, VOUCHER],
       ]),
+      lapsed: new Set<string>(),
       rawUnits: 3n * VOUCHER,
       paidUnits: 3n * VOUCHER,
     },
     {
       hour: DAY_TWO,
       credits: new Map([[ALICE, VOUCHER / 2n]]),
+      lapsed: new Set<string>(),
       rawUnits: VOUCHER / 2n,
       paidUnits: VOUCHER / 2n,
     },
@@ -72,6 +74,7 @@ function storeWithHold(): HoldStore {
         [ALICE, VOUCHER / 2n],
         [BOB, VOUCHER / 2n],
       ]),
+      lapsed: new Set<string>(),
       rawUnits: VOUCHER,
       paidUnits: VOUCHER,
     },
@@ -111,8 +114,18 @@ describe('GET /api/issuer/hold/stats', () => {
     const { app } = createTestApp(undefined, { holdStore: storeWithHold(), now: () => NOW });
     const stats = await statsOf(app);
     expect(stats.earners).toEqual([
-      { address: ALICE, countedBalance: (2_000_000n * UNITS_PER_THKR).toString(), earned: 3 },
-      { address: BOB, countedBalance: (400_000n * UNITS_PER_THKR).toString(), earned: 1.5 },
+      {
+        address: ALICE,
+        countedBalance: (2_000_000n * UNITS_PER_THKR).toString(),
+        earned: 3,
+        expiry: null,
+      },
+      {
+        address: BOB,
+        countedBalance: (400_000n * UNITS_PER_THKR).toString(),
+        earned: 1.5,
+        expiry: null,
+      },
     ]);
     expect(stats.earnerCount).toBe(2);
   });
@@ -121,9 +134,8 @@ describe('GET /api/issuer/hold/stats', () => {
     const { app } = createTestApp(undefined, { holdStore: storeWithHold(), now: () => NOW });
     const stats = await statsOf(app);
     for (const earner of stats.earners) {
-      expect(Object.keys(earner).sort()).toEqual(['address', 'countedBalance', 'earned']);
+      expect(Object.keys(earner).sort()).toEqual(['address', 'countedBalance', 'earned', 'expiry']);
     }
-    expect(stats.claimable).toBe(2);
     expect(stats.totals).toMatchObject({ earned: 4.5, issued: 0, pending: 2, earning: 2 });
   });
 
@@ -170,7 +182,12 @@ describe('GET /api/issuer/hold/stats', () => {
   it('answers before the first count with nothing in it', async () => {
     const { app } = createTestApp(undefined, { now: () => NOW });
     const stats = await statsOf(app);
-    expect(stats).toMatchObject({ claimable: 0, days: [], earners: [], earnerCount: 0 });
+    expect(stats).toMatchObject({
+      days: [],
+      earners: [],
+      earnerCount: 0,
+      burns: [],
+    });
     expect(stats.totals).toMatchObject({ earned: 0, countedUntil: null, dailyPoolUsd: null });
   });
 });
