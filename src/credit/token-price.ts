@@ -21,6 +21,7 @@ import { IssuerError } from '../lib/errors.js';
 import type { LogLine } from '../lib/log.js';
 import { ethCall, type ChainDeps } from './chain.js';
 import type { Ledger, PriceSample } from './ledger.js';
+import { windowedUnitsPerUsd } from './price-window.js';
 
 const POOL_MANAGER_ABI = parseAbi(['function extsload(bytes32 slot) view returns (bytes32)']);
 
@@ -141,17 +142,7 @@ function decodeMarket(state: Hex, liquidity: Hex, slot0: Hex): TokenMarket {
  * last hour, which is the lower price of the two. Null when the readings are too few or too old.
  */
 export function quoteUnitsPerUsd(samples: readonly PriceSample[], now: number): bigint | null {
-  const recent = samples.filter(
-    (sample) => sample.at > now - TOKEN_PRICE.windowMs && sample.at <= now,
-  );
-  const newest = recent.reduce<PriceSample | null>(
-    (latest, sample) => (latest === null || sample.at > latest.at ? sample : latest),
-    null,
-  );
-  if (newest === null || recent.length < TOKEN_PRICE.minSamples) return null;
-  if (now - newest.at > TOKEN_PRICE.maxSampleAgeMs) return null;
-  const mean = recent.reduce((sum, sample) => sum + sample.unitsPerUsd, 0n) / BigInt(recent.length);
-  return newest.unitsPerUsd > mean ? newest.unitsPerUsd : mean;
+  return windowedUnitsPerUsd(samples, now, TOKEN_PRICE);
 }
 
 /** Reads the price of THKR once and keeps it in the ledger. */

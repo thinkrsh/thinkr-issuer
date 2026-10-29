@@ -2,6 +2,7 @@
 // these shapes (apps/dash/src/services/contract.ts mirrors them).
 import { z } from 'zod';
 
+import { COIN_IDS, type CoinId } from './config/coins.js';
 import { CREDIT, MAX_TOP_UP_NOTES, NOTE_SIGNATURE } from './config/credit.js';
 import { HOLD } from './config/hold.js';
 import { MESSAGES } from './config/messages.js';
@@ -239,6 +240,81 @@ export const ticketRedeemRequestSchema = z.strictObject({
 });
 
 export type TicketRedeemRequest = z.infer<typeof ticketRedeemRequestSchema>;
+
+/** One privacy coin that top-ups take (29 Oct 2026), as the chat app shows it. */
+export interface CoinInfo {
+  coin: CoinId;
+  name: string;
+  symbol: string;
+  /** Decimals of the smallest unit of the coin, in which amounts are written. */
+  decimals: number;
+  /** Blocks that must hold a payment before its notes come. */
+  confirmations: number;
+}
+
+/**
+ * GET /api/issuer/top-ups/coins: the privacy coins that top-ups take now, none while the server runs
+ * no wallet, and the bounds of one top-up. New fields say notes (decision 275); the older routes keep
+ * their names. Mirror: coinTopUpsSchema in apps/app/src/services/contract.ts.
+ */
+export interface CoinTopUpsResponse {
+  coins: CoinInfo[];
+  noteUsd: number;
+  maxNotes: number;
+  /** How long the address of a quote holds its amount. */
+  quoteTtlMs: number;
+}
+
+/**
+ * POST /api/issuer/top-ups/coin-quotes: an address of its own for a top-up of `notes` on a ticket of
+ * the chat app, paid in a privacy coin. As for the other top-ups of a ticket, the issuer never sees
+ * a blinded note: the chat app fetches them once the payment came.
+ */
+export const coinQuoteRequestSchema = z.strictObject({
+  ticket: ticketHashSchema,
+  coin: z.enum(COIN_IDS),
+  notes: z
+    .number()
+    .int()
+    .min(1, MESSAGES.coinNotesInvalid)
+    .max(MAX_TOP_UP_NOTES, MESSAGES.coinNotesInvalid),
+});
+
+export type CoinQuoteRequest = z.infer<typeof coinQuoteRequestSchema>;
+
+/**
+ * Where a quote in a privacy coin stands: no payment yet, a payment seen that waits for its blocks,
+ * notes added to the ticket, or its time ended with nothing paid.
+ */
+export type CoinQuoteState = 'waiting' | 'seen' | 'credited' | 'expired';
+
+/**
+ * A quote in a privacy coin: what to send, to where, and by when, and where it stands. Answer of
+ * POST /api/issuer/top-ups/coin-quotes and of GET /api/issuer/top-ups/coin-quotes/<id>.
+ * Mirror: coinQuoteSchema in apps/app/src/services/contract.ts.
+ */
+export interface CoinQuoteResponse {
+  /** The id of the quote, to ask about it again. */
+  id: string;
+  coin: CoinId;
+  name: string;
+  symbol: string;
+  decimals: number;
+  /** The address of this quote alone. */
+  address: string;
+  /** What to send, in the smallest unit of the coin. */
+  amount: string;
+  /** The payment link that wallets open, with the amount in whole coins. */
+  uri: string;
+  /** The notes that the amount buys, and their worth. */
+  notes: number;
+  usd: number;
+  expiresAt: number;
+  confirmations: number;
+  state: CoinQuoteState;
+  /** The notes that its payments added to the ticket so far. */
+  credited: number;
+}
 
 /**
  * GET /api/issuer/token/payments: every payment in THKR, the oldest first, for the treasury of the

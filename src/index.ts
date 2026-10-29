@@ -7,9 +7,13 @@ import { getConnInfo } from '@hono/node-server/conninfo';
 import type { Context } from 'hono';
 
 import { createApp } from './app.js';
+import { COIN_IDS, type CoinId } from './config/coins.js';
 import { readEnv } from './config/env.js';
 import { MESSAGES } from './config/messages.js';
 import { SERVER } from './config/server.js';
+import { startCoinPriceSampler } from './credit/coin-price.js';
+import { coinWallet, type CoinWallet } from './credit/coin-wallet.js';
+import { startCoinWatch } from './credit/coin-watch.js';
 import { startTokenPriceSampler } from './credit/token-price.js';
 import { startHoldSync } from './hold/sync.js';
 import { IssuerError } from './lib/errors.js';
@@ -30,6 +34,13 @@ const claimDeposits = claimDepositsOnChain({
   factory: env.claimFactory,
   operatorKey: operatorKeyFrom(readFileSync(env.claimOperatorKeyFile, 'utf8')),
 });
+/** The coins that top-ups take, each with its view-only wallet; none while COIN_TOP_UPS is unset. */
+const coinWallets: Partial<Record<CoinId, CoinWallet>> = {};
+for (const coin of COIN_IDS) {
+  const url = env.coinWallets[coin];
+  if (url !== undefined) coinWallets[coin] = coinWallet(coin, { fetch: globalThis.fetch, url });
+}
+const coins = COIN_IDS.filter((coin) => coinWallets[coin] !== undefined);
 
 /** A secret of this process: the keys of visitors cannot be traced back to their addresses. */
 const VISITOR_KEY_SECRET = randomBytes(SERVER.visitorKeySecretBytes);
@@ -63,6 +74,7 @@ const app = createApp({
   holdStore,
   holderKeys,
   claimDeposits,
+  coinWallets,
 });
 
 const server = serve({ fetch: app.fetch, hostname: SERVER.host, port: SERVER.port }, (info) => {
@@ -92,10 +104,28 @@ const stopHold = startHoldSync({
   log: writeLogLine,
 });
 
+// Top-ups in privacy coins: their prices each minute, and the watch of their addresses.
+const stopCoinPrices =
+  coins.length === 0
+    ? () => undefined
+    : startCoinPriceSampler(
+        { fetch: globalThis.fetch, ledger, now: () => Date.now(), log: writeLogLine },
+        coins,
+      );
+const stopCoinWatch = startCoinWatch({
+  ledger,
+  coinWallets,
+  fetch: globalThis.fetch,
+  now: () => Date.now(),
+  log: writeLogLine,
+});
+
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
     stopTokenPrice();
     stopHold();
+    stopCoinPrices();
+    stopCoinWatch();
     server.close();
   });
 }

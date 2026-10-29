@@ -10,6 +10,7 @@ import { LIMITS } from './config/limits.js';
 import { MESSAGES } from './config/messages.js';
 import { SERVER } from './config/server.js';
 import { TOKEN_PAYMENT, type TokenPaymentConfig } from './config/token.js';
+import type { CoinWallets } from './credit/coin-wallet.js';
 import type { HolderKeys } from './credit/holder-keys.js';
 import type { Ledger } from './credit/ledger.js';
 import type { NoteKey } from './credit/note-key.js';
@@ -18,6 +19,7 @@ import type { ClaimDeposits } from './hold/claim-deposits.js';
 import { IssuerError, errorBody } from './lib/errors.js';
 import { formatRequestLog, type LogLine } from './lib/log.js';
 import { createFixedWindowLimiter } from './lib/rate-limit.js';
+import { createCoinTopUpRoute } from './routes/coin-top-ups.js';
 import { createHealthRoute } from './routes/health.js';
 import { createHoldRoute } from './routes/hold.js';
 import { createIssuerRoute } from './routes/issuer.js';
@@ -41,6 +43,8 @@ export interface AppDeps {
   readonly claimDeposits: ClaimDeposits;
   /** Payment in THKR; unset, TOKEN_PAYMENT of config/token.ts. Tests name a wallet of their own. */
   readonly tokenPayment?: TokenPaymentConfig;
+  /** The view-only wallet of each privacy coin that top-ups take (config/coins.ts). */
+  readonly coinWallets: CoinWallets;
 }
 
 export function createApp(deps: AppDeps): Hono {
@@ -75,6 +79,7 @@ export function createApp(deps: AppDeps): Hono {
       tokenPayment: deps.tokenPayment ?? TOKEN_PAYMENT,
     }),
   );
+  app.route('/', createCoinTopUpRoute({ ...deps, limiter, ticketLimiter }));
   app.route('/', createHoldRoute({ ...deps, limiter }));
   app.notFound((c) => c.json(errorBody('invalid_request', MESSAGES.notFound), 404));
   app.onError((error, c) => {

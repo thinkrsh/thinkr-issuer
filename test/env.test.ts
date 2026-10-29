@@ -21,7 +21,27 @@ describe('readEnv', () => {
       chainRpcUrl: null,
       claimFactory: '0xc1a1f0000000000000000000000000000000c1a1',
       claimOperatorKeyFile: '../../secret/claim-operator-key.txt',
+      coinWallets: {},
     });
+  });
+
+  it('reads the coins of top-ups, each with the URL of its wallet', () => {
+    const coins = {
+      ...LAPTOP,
+      COIN_TOP_UPS: 'zec, xmr',
+      MONERO_WALLET_RPC_URL: 'http://127.0.0.1:18083',
+      ZCASH_WALLETD_URL: 'http://127.0.0.1:8000',
+    };
+    expect(readEnv(coins).coinWallets).toEqual({
+      xmr: 'http://127.0.0.1:18083',
+      zec: 'http://127.0.0.1:8000',
+    });
+    expect(() => readEnv({ ...LAPTOP, COIN_TOP_UPS: 'xmr' })).toThrow(/MONERO_WALLET_RPC_URL/);
+    expect(() => readEnv({ ...LAPTOP, COIN_TOP_UPS: 'btc' })).toThrow(/COIN_TOP_UPS/);
+    // A wallet that no coin names is not called.
+    expect(readEnv({ ...LAPTOP, ZCASH_WALLETD_URL: 'http://127.0.0.1:8000' }).coinWallets).toEqual(
+      {},
+    );
   });
 
   it('refuses a factory that is no address', () => {

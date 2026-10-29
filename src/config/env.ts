@@ -1,7 +1,17 @@
 // Reads the environment once at startup and stops with a clear error when a variable is missing.
 import { z } from 'zod';
 
-const envSchema = z.object({
+import { COIN_IDS, type CoinId } from './coins.js';
+
+/** The variable that names the URL of the wallet of each coin of top-ups. */
+const COIN_WALLET_VARIABLES = {
+  xmr: 'MONERO_WALLET_RPC_URL',
+  zec: 'ZCASH_WALLETD_URL',
+} as const satisfies Record<CoinId, string>;
+
+const coinListPattern = new RegExp(`^(${COIN_IDS.join('|')})(\\s*,\\s*(${COIN_IDS.join('|')}))*$`);
+
+const envObject = z.object({
   /**
    * The header that carries the address of the visitor, such as CF-Connecting-IP behind Cloudflare
    * and Caddy. Unset, the issuer counts the address of the socket, as on the laptop.
@@ -43,6 +53,25 @@ const envSchema = z.object({
    * settles and refunds the deposits and pays their gas. On the server it never leaves the server.
    */
   CLAIM_OPERATOR_KEY_FILE: z.string().trim().min(1),
+  /**
+   * The privacy coins that top-ups take (config/coins.ts), comma-separated: xmr, zec. Each needs
+   * the URL of its wallet below. Unset, top-ups take none, and the issuer calls no wallet.
+   */
+  COIN_TOP_UPS: z.string().trim().regex(coinListPattern).optional(),
+  /** monero-wallet-rpc with the view-only wallet of top-ups, on the loopback of the server. */
+  MONERO_WALLET_RPC_URL: z.url({ protocol: /^https?$/ }).optional(),
+  /** zcash-walletd with the viewing key of top-ups, on the loopback of the server. */
+  ZCASH_WALLETD_URL: z.url({ protocol: /^https?$/ }).optional(),
+});
+
+/** A coin of top-ups with no URL of its wallet stops the issuer at startup. */
+const envSchema = envObject.superRefine((data, ctx) => {
+  for (const coin of coinsOf(data.COIN_TOP_UPS)) {
+    const variable = COIN_WALLET_VARIABLES[coin];
+    if (data[variable] === undefined) {
+      ctx.addIssue({ code: 'custom', path: [variable], message: `${coin} needs its wallet.` });
+    }
+  }
 });
 
 export interface Env {
@@ -57,6 +86,8 @@ export interface Env {
   /** In lower case. */
   readonly claimFactory: string;
   readonly claimOperatorKeyFile: string;
+  /** The URL of the wallet of each coin that top-ups take; empty while they take none. */
+  readonly coinWallets: Readonly<Partial<Record<CoinId, string>>>;
 }
 
 export type EnvSource = Readonly<Record<string, string | undefined>>;
@@ -83,5 +114,22 @@ export function readEnv(source: EnvSource): Env {
     chainRpcUrl: result.data.CHAIN_RPC_URL ?? null,
     claimFactory: result.data.CLAIM_FACTORY.toLowerCase(),
     claimOperatorKeyFile: result.data.CLAIM_OPERATOR_KEY_FILE,
+    coinWallets: coinWalletsOf(result.data),
   };
+}
+
+/** The URL of the wallet of each coin that top-ups take, as the schema checked them. */
+function coinWalletsOf(data: z.infer<typeof envObject>): Partial<Record<CoinId, string>> {
+  const wallets: Partial<Record<CoinId, string>> = {};
+  for (const coin of coinsOf(data.COIN_TOP_UPS)) {
+    const url = data[COIN_WALLET_VARIABLES[coin]];
+    if (url !== undefined) wallets[coin] = url;
+  }
+  return wallets;
+}
+
+/** The coins of a list such as "xmr, zec", each once, in the order of COIN_IDS. */
+function coinsOf(list: string | undefined): CoinId[] {
+  const named = new Set((list ?? '').split(',').map((coin) => coin.trim()));
+  return COIN_IDS.filter((coin) => named.has(coin));
 }

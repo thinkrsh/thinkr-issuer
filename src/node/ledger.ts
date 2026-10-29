@@ -6,7 +6,10 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
+import { COIN_IDS, type CoinId } from '../config/coins.js';
 import type {
+  CoinQuote,
+  CoinTransferRecord,
   Ledger,
   PaymentClaim,
   PaymentTarget,
@@ -63,6 +66,36 @@ const SCHEMA = `
     request_hash TEXT PRIMARY KEY,
     ticket_hash TEXT NOT NULL,
     vouchers INTEGER NOT NULL
+  ) STRICT;
+  CREATE TABLE IF NOT EXISTS coin_quotes (
+    id TEXT PRIMARY KEY,
+    coin TEXT NOT NULL,
+    ticket_hash TEXT NOT NULL,
+    address TEXT NOT NULL,
+    address_index INTEGER NOT NULL,
+    notes INTEGER NOT NULL,
+    amount TEXT NOT NULL,
+    units_per_usd TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    credited INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (coin, address_index)
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS coin_quotes_watched ON coin_quotes (coin, expires_at);
+  CREATE TABLE IF NOT EXISTS coin_transfers (
+    quote_id TEXT NOT NULL,
+    txid TEXT NOT NULL,
+    amount TEXT NOT NULL,
+    first_seen_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    usd_micros INTEGER,
+    PRIMARY KEY (quote_id, txid)
+  ) STRICT;
+  CREATE TABLE IF NOT EXISTS coin_prices (
+    coin TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    units_per_usd TEXT NOT NULL,
+    PRIMARY KEY (coin, at)
   ) STRICT;
 `;
 
@@ -130,6 +163,38 @@ export function openLedger(file: string): Ledger {
   );
   const insertRedemption = db.prepare(
     'INSERT INTO top_up_redemptions (request_hash, ticket_hash, vouchers) VALUES (?, ?, ?)',
+  );
+  const coinQuoteColumns =
+    'id, coin, ticket_hash, address, address_index, notes, amount, units_per_usd, created_at, ' +
+    'expires_at, credited';
+  const insertCoinQuote = db.prepare(
+    `INSERT INTO coin_quotes (${coinQuoteColumns}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const selectCoinQuote = db.prepare(`SELECT ${coinQuoteColumns} FROM coin_quotes WHERE id = ?`);
+  const selectWatchedCoinQuotes = db.prepare(
+    `SELECT ${coinQuoteColumns} FROM coin_quotes ` +
+      'WHERE coin = ? AND expires_at > ? AND credited < ? ORDER BY created_at, id',
+  );
+  const addCoinCredit = db.prepare('UPDATE coin_quotes SET credited = ? WHERE id = ?');
+  const selectCoinTransfers = db.prepare(
+    'SELECT txid, amount, first_seen_at, last_seen_at, usd_micros FROM coin_transfers ' +
+      'WHERE quote_id = ? ORDER BY first_seen_at, txid',
+  );
+  const upsertCoinTransfer = db.prepare(
+    'INSERT INTO coin_transfers (quote_id, txid, amount, first_seen_at, last_seen_at) ' +
+      'VALUES (?, ?, ?, ?, ?) ON CONFLICT (quote_id, txid) DO UPDATE SET ' +
+      'last_seen_at = MAX(last_seen_at, excluded.last_seen_at)',
+  );
+  const setCoinTransferWorth = db.prepare(
+    'UPDATE coin_transfers SET usd_micros = ? ' +
+      'WHERE quote_id = ? AND txid = ? AND usd_micros IS NULL',
+  );
+  const insertCoinPrice = db.prepare(
+    'INSERT OR REPLACE INTO coin_prices (coin, at, units_per_usd) VALUES (?, ?, ?)',
+  );
+  const dropCoinPrices = db.prepare('DELETE FROM coin_prices WHERE coin = ? AND at < ?');
+  const selectCoinPrices = db.prepare(
+    'SELECT at, units_per_usd FROM coin_prices WHERE coin = ? AND at >= ? ORDER BY at',
   );
 
   const transaction = <T>(work: () => T, keep: (result: T) => boolean): T => {
@@ -268,6 +333,74 @@ export function openLedger(file: string): Ledger {
         unitsPerUsd: BigInt(text(row.units_per_usd)),
       }));
     },
+    saveCoinQuote(quote) {
+      insertCoinQuote.run(
+        quote.id,
+        quote.coin,
+        quote.ticketHash,
+        quote.address,
+        quote.addressIndex,
+        quote.notes,
+        quote.amount.toString(),
+        quote.unitsPerUsd.toString(),
+        quote.createdAt,
+        quote.expiresAt,
+        quote.credited,
+      );
+    },
+    coinQuote(id): CoinQuote | null {
+      const row = selectCoinQuote.get(id);
+      return row === undefined ? null : coinQuoteOf(row);
+    },
+    watchedCoinQuotes(coin, endedAfter, maxNotes): CoinQuote[] {
+      return selectWatchedCoinQuotes.all(coin, endedAfter, maxNotes).map(coinQuoteOf);
+    },
+    coinTransfers(quoteId): CoinTransferRecord[] {
+      return selectCoinTransfers.all(quoteId).map((row) => ({
+        txid: text(row.txid),
+        amount: BigInt(text(row.amount)),
+        firstSeenAt: integer(row.first_seen_at),
+        lastSeenAt: integer(row.last_seen_at),
+        usdMicros: row.usd_micros === null ? null : integer(row.usd_micros),
+      }));
+    },
+    seeCoinTransfer(quoteId, txid, amount, at) {
+      upsertCoinTransfer.run(quoteId, txid, amount.toString(), at, at);
+    },
+    settleCoinQuote(quoteId, worths, notes): number {
+      return transaction(
+        (): number => {
+          for (const worth of worths) {
+            setCoinTransferWorth.run(worth.usdMicros, quoteId, worth.txid);
+          }
+          const row = selectCoinQuote.get(quoteId);
+          if (row === undefined) throw new Error('A coin quote to settle is missing.');
+          const quote = coinQuoteOf(row);
+          const added = notes - quote.credited;
+          if (added > 0) {
+            addCoinCredit.run(notes, quoteId);
+            addPaid.run(quote.ticketHash, added);
+          }
+          return Math.max(added, 0);
+        },
+        () => true,
+      );
+    },
+    addCoinPrice(coin, sample, dropBefore) {
+      transaction(
+        () => {
+          dropCoinPrices.run(coin, dropBefore);
+          insertCoinPrice.run(coin, sample.at, sample.unitsPerUsd.toString());
+        },
+        () => true,
+      );
+    },
+    coinPrices(coin, since): PriceSample[] {
+      return selectCoinPrices.all(coin, since).map((row) => ({
+        at: integer(row.at),
+        unitsPerUsd: BigInt(text(row.units_per_usd)),
+      }));
+    },
     ticket,
     redeemTicket(hash, requestHash, vouchers): TicketRedemption {
       return transaction(
@@ -288,6 +421,29 @@ export function openLedger(file: string): Ledger {
       );
     },
   };
+}
+
+/** A row of coin_quotes, read back. */
+function coinQuoteOf(row: Record<string, unknown>): CoinQuote {
+  return {
+    id: text(row.id),
+    coin: coinIdOf(text(row.coin)),
+    ticketHash: text(row.ticket_hash),
+    address: text(row.address),
+    addressIndex: integer(row.address_index),
+    notes: integer(row.notes),
+    amount: BigInt(text(row.amount)),
+    unitsPerUsd: BigInt(text(row.units_per_usd)),
+    createdAt: integer(row.created_at),
+    expiresAt: integer(row.expires_at),
+    credited: integer(row.credited),
+  };
+}
+
+function coinIdOf(value: string): CoinId {
+  const coin = COIN_IDS.find((id) => id === value);
+  if (coin === undefined) throw new Error('The ledger holds a coin it does not know.');
+  return coin;
 }
 
 /** A column that the schema keeps as an integer. */

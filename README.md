@@ -69,17 +69,60 @@ This section explains a top-up that the token of Thinkr pays.
 - To list what to sell and what to burn, run `npm run treasury`. The command
   reads the chain and the issuer, and sends nothing.
 
+## Payment in Monero and Zcash
+
+This section explains a top-up that a privacy coin pays (29 Oct 2026). The chat
+app runs it in its settings, and its notes stay blind as in every top-up.
+
+1. The chat app names its ticket, the coin, and the dollars of credit.
+2. The issuer asks the wallet of the coin for a new address, prices the credit
+   in the coin, and keeps the quote for 15 minutes. Each top-up has an address
+   of its own, so a payment needs no signature.
+3. Every 15 seconds the issuer asks the wallet what came in to the addresses of
+   its quotes. A payment counts once a block holds it.
+4. The notes that the payment buys join the ticket. The chat app fetches them as
+   for any top-up of a ticket.
+
+The wallets hold view keys only: they can see what comes in, and can never
+spend it. The spend keys stay with the owner.
+
+- Monero: `monero-wallet-rpc` with a view-only wallet, on a pruned node of our
+  own.
+- Zcash: `zcash-walletd` with a viewing key, which reads blocks from a public
+  `lightwalletd`. Before a payment of Zcash counts, the issuer asks a second
+  server, Blockchair, for the whole block at its height, and checks that the
+  block holds the payment. The issuer never asks for a transaction, so the
+  second server cannot tell which payment Thinkr waits for.
+
+A payment counts for what it is worth, in whole dollars of credit, up to the cap
+of one top-up. A payment that the issuer first sees within 30 minutes after its
+quote ends keeps the price of its quote. A later one counts at the price of
+then, so that an old quote is no bet on a falling coin. The issuer watches each
+address for 30 days.
+
+The prices come from the last trades at Kraken and Bitfinex, read each minute.
+The issuer keeps the lower price of the two, and a quote takes the lower of the
+newest price and the mean of the last half hour.
+
+What the issuer keeps differs from a top-up on Robinhood Chain. It keeps the
+address, the amount, and the id of each payment with its ticket. It never puts
+these payments in the public list of `GET /issuer/top-ups/payments`, because no
+chain shows them to anyone.
+
 ## Routes
 
 This section lists the routes of the issuer. Every route lives under `/api`.
 
-| Route                        | Purpose                                                    |
-| ---------------------------- | ---------------------------------------------------------- |
-| `GET /health`                | Answers `{ "ok": true }`.                                  |
-| `GET /issuer/network`        | The chain, the tokens, and the wallets of a top-up.        |
-| `POST /issuer/quote`         | What to sign and to pay for these blinded messages.        |
-| `POST /issuer/claims`        | A paid top-up, answered with one blind signature for each. |
-| `GET /issuer/token/payments` | Every payment in THKR, the oldest first, for the treasury. |
+| Route                                  | Purpose                                                    |
+| -------------------------------------- | ---------------------------------------------------------- |
+| `GET /health`                          | Answers `{ "ok": true }`.                                  |
+| `GET /issuer/network`                  | The chain, the tokens, and the wallets of a top-up.        |
+| `POST /issuer/quote`                   | What to sign and to pay for these blinded messages.        |
+| `POST /issuer/claims`                  | A paid top-up, answered with one blind signature for each. |
+| `GET /issuer/token/payments`           | Every payment in THKR, the oldest first, for the treasury. |
+| `GET /issuer/top-ups/coins`            | The privacy coins that top-ups take now.                   |
+| `POST /issuer/top-ups/coin-quotes`     | A quote in a privacy coin, with an address of its own.     |
+| `GET /issuer/top-ups/coin-quotes/<id>` | Where a quote in a privacy coin stands.                    |
 
 `src/contract.ts` holds the shape of every request and every answer.
 
@@ -95,13 +138,16 @@ Node.js 22.12 or later.
 3. To start the issuer, run `npm run dev`. It reads `env/local.env` and listens
    on `127.0.0.1:8788`.
 
-| Variable                | Value                                                                  |
-| ----------------------- | ---------------------------------------------------------------------- |
-| `VOUCHER_KEY_FILE`      | The RSA private key (PEM, 2048 bits) that signs vouchers.              |
-| `DATABASE_FILE`         | The SQLite file of the claimed payments, the quotes, and the prices.   |
-| `CLIENT_ADDRESS_HEADER` | Optional. The header with the IP address, such as `CF-Connecting-IP`.  |
-| `CHAIN_RPC_URL`         | Optional. The RPC of a provider. Unset, the public RPC of the chain.   |
-| `TESTNET_PAYERS`        | Optional. The wallets that may top up while payment runs on a testnet. |
+| Variable                | Value                                                                       |
+| ----------------------- | --------------------------------------------------------------------------- |
+| `VOUCHER_KEY_FILE`      | The RSA private key (PEM, 2048 bits) that signs vouchers.                   |
+| `DATABASE_FILE`         | The SQLite file of the claimed payments, the quotes, and the prices.        |
+| `CLIENT_ADDRESS_HEADER` | Optional. The header with the IP address, such as `CF-Connecting-IP`.       |
+| `CHAIN_RPC_URL`         | Optional. The RPC of a provider. Unset, the public RPC of the chain.        |
+| `TESTNET_PAYERS`        | Optional. The wallets that may top up while payment runs on a testnet.      |
+| `COIN_TOP_UPS`          | Optional. The privacy coins of top-ups: `xmr`, `zec`, or both. Unset, none. |
+| `MONERO_WALLET_RPC_URL` | The URL of `monero-wallet-rpc`, when `COIN_TOP_UPS` names `xmr`.            |
+| `ZCASH_WALLETD_URL`     | The URL of `zcash-walletd`, when `COIN_TOP_UPS` names `zec`.                |
 
 ## Limits
 

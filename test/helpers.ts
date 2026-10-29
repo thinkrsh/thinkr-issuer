@@ -6,6 +6,7 @@ import { vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import { NOTE_SIGNATURE } from '../src/config/credit.js';
 import type { TokenPaymentConfig } from '../src/config/token.js';
+import type { CoinWallets } from '../src/credit/coin-wallet.js';
 import type { Ledger } from '../src/credit/ledger.js';
 import type { ClaimDeposits } from '../src/hold/claim-deposits.js';
 import type { HoldStore } from '../src/hold/store.js';
@@ -109,6 +110,10 @@ export interface TestAppOptions {
   readonly holdStore?: HoldStore;
   /** The factory of deposit addresses; unset, a new fake one. */
   readonly claimDeposits?: FakeClaimDeposits;
+  /** The wallets of top-ups in privacy coins; unset, none. */
+  readonly coinWallets?: CoinWallets;
+  /** The ledger; unset, a new one in memory. */
+  readonly ledger?: Ledger;
 }
 
 export function createTestApp(
@@ -116,7 +121,7 @@ export function createTestApp(
   options: TestAppOptions = {},
 ): TestApp {
   const logs: string[] = [];
-  const ledger = openLedger(':memory:');
+  const ledger = options.ledger ?? openLedger(':memory:');
   const holdStore = options.holdStore ?? openHoldStore(':memory:');
   const claimDeposits = options.claimDeposits ?? fakeClaimDeposits();
   const app = createApp({
@@ -129,7 +134,9 @@ export function createTestApp(
       chainRpcUrl: options.chainRpcUrl ?? null,
       claimFactory: '0x00000000000000000000000000000000000c1a1f',
       claimOperatorKeyFile: 'unused-in-tests.txt',
+      coinWallets: {},
     },
+    coinWallets: options.coinWallets ?? {},
     ledger,
     noteKey: TEST_NOTE_KEY,
     holdStore,
