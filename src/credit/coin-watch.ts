@@ -2,14 +2,13 @@
 // the wallet of each coin what came in to the addresses of the quotes that are open or ended lately,
 // and every few minutes to the addresses of every quote it still watches. It notes each payment it
 // sees; once a payment has its blocks, and the second server holds it where the coin needs one, the
-// payment counts, and the notes it buys join the ticket of its quote. The log names no address,
+// payment counts, and the credit it buys joins the ticket of its quote. The log names no address,
 // payment, or ticket.
 import { COIN_IDS, COIN_TOP_UP, COINS, type CoinId } from '../config/coins.js';
-import { MAX_TOP_UP_NOTES } from '../config/credit.js';
 import { MESSAGES } from '../config/messages.js';
 import type { LogLine } from '../lib/log.js';
 import { coinQuoteUnitsPerUsd } from './coin-price.js';
-import { notesFor, unitsPerUsdFor, usdMicrosOf } from './coin-top-up.js';
+import { centsFor, unitsPerUsdFor, usdMicrosOf } from './coin-top-up.js';
 import type { CoinWallets, IncomingTransfer } from './coin-wallet.js';
 import type { CoinQuote, CoinTransferWorth, Ledger } from './ledger.js';
 import { zcashBlockHolds } from './zcash-check.js';
@@ -38,7 +37,7 @@ export interface WatchMemory {
 
 /**
  * One round for one coin, over the quotes that are open or ended lately, or with `all` over every
- * quote it still watches. Returns the notes that joined tickets.
+ * quote it still watches. Returns the cents that joined tickets.
  */
 export async function watchCoin(
   deps: CoinWatchDeps,
@@ -50,7 +49,7 @@ export async function watchCoin(
   if (wallet === undefined) return 0;
   const now = deps.now();
   const endedAfter = now - (all ? COIN_TOP_UP.watchMs : COIN_TOP_UP.inTimeGraceMs);
-  const quotes = deps.ledger.watchedCoinQuotes(coin, endedAfter, MAX_TOP_UP_NOTES);
+  const quotes = deps.ledger.watchedCoinQuotes(coin, endedAfter);
   if (quotes.length === 0) return 0;
   const incoming = await wallet.incoming(quotes.map((quote) => quote.addressIndex));
   const unitsPerUsdNow = coinQuoteUnitsPerUsd(deps.ledger, coin, now);
@@ -67,7 +66,7 @@ export async function watchCoin(
 
 /**
  * Counts the payments of a quote that have their blocks and were not counted yet, and adds the
- * notes they buy to its ticket. Returns how many joined.
+ * credit they buy to its ticket. Returns the cents that joined.
  */
 async function settle(
   deps: CoinWatchDeps,
@@ -92,7 +91,7 @@ async function settle(
     ...records.map((record) => record.usdMicros ?? 0),
     ...worths.map((w) => w.usdMicros),
   ].reduce((sum, micros) => sum + micros, 0);
-  return deps.ledger.settleCoinQuote(quote.id, worths, notesFor(counted));
+  return deps.ledger.settleCoinQuote(quote.id, worths, centsFor(counted));
 }
 
 /**

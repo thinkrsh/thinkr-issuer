@@ -19,6 +19,7 @@
     "treasury": "tsx src/treasury.ts",
     "expiry": "tsx src/expiry.ts",
     "holder-keys": "tsx src/holder-keys.ts",
+    "change-keys": "tsx src/change-keys.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",

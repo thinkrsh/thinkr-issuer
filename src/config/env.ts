@@ -24,6 +24,11 @@ const envObject = z.object({
    * named after it: 2026-10.pem (decision 189). `npm run holder-keys` makes them.
    */
   HOLDER_KEYS_DIR: z.string().trim().min(1),
+  /**
+   * The folder of the keys of the notes of change, 10.pem and 1.pem (credit/change-keys.ts). `npm run
+   * change-keys` makes them. Read only while COIN_TOP_UPS names a coin, which needs it.
+   */
+  CHANGE_KEYS_DIR: z.string().trim().min(1).optional(),
   /** The SQLite file of the ledger of the issuer: payments claimed, quotes, and prices of THKR. */
   DATABASE_FILE: z.string().trim().min(1),
   /**
@@ -64,12 +69,15 @@ const envObject = z.object({
   ZCASH_WALLETD_URL: z.url({ protocol: /^https?$/ }).optional(),
 });
 
-/** A coin of top-ups with no URL of its wallet stops the issuer at startup. */
+/** A coin of top-ups with no URL of its wallet, or with no keys of change, stops the issuer at startup. */
 const envSchema = envObject.superRefine((data, ctx) => {
   for (const coin of coinsOf(data.COIN_TOP_UPS)) {
     const variable = COIN_WALLET_VARIABLES[coin];
     if (data[variable] === undefined) {
       ctx.addIssue({ code: 'custom', path: [variable], message: `${coin} needs its wallet.` });
+    }
+    if (data.CHANGE_KEYS_DIR === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['CHANGE_KEYS_DIR'], message: `${coin} needs change.` });
     }
   }
 });
@@ -78,6 +86,8 @@ export interface Env {
   readonly clientAddressHeader: string | null;
   readonly noteKeyFile: string;
   readonly holderKeysDir: string;
+  /** Null while no coin of top-ups needs it. */
+  readonly changeKeysDir: string | null;
   readonly databaseFile: string;
   /** In lower case. */
   readonly testnetPayers: readonly string[];
@@ -106,6 +116,8 @@ export function readEnv(source: EnvSource): Env {
     clientAddressHeader: result.data.CLIENT_ADDRESS_HEADER ?? null,
     noteKeyFile: result.data.VOUCHER_KEY_FILE,
     holderKeysDir: result.data.HOLDER_KEYS_DIR,
+    changeKeysDir:
+      coinsOf(result.data.COIN_TOP_UPS).length > 0 ? (result.data.CHANGE_KEYS_DIR ?? null) : null,
     databaseFile: result.data.DATABASE_FILE,
     testnetPayers: (result.data.TESTNET_PAYERS ?? '')
       .split(',')

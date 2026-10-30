@@ -7,6 +7,7 @@ import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { COIN_IDS, type CoinId } from '../config/coins.js';
+import { splitCents } from '../credit/change-keys.js';
 import type {
   CoinQuote,
   CoinTransferRecord,
@@ -19,6 +20,7 @@ import type {
   TokenPaymentRecord,
   TokenQuote,
   TopUpTicket,
+  TicketChange,
 } from '../credit/ledger.js';
 import { addMissingColumns, type AddedColumn } from './sqlite.js';
 
@@ -61,6 +63,13 @@ const SCHEMA = `
     hash TEXT PRIMARY KEY,
     paid INTEGER NOT NULL,
     redeemed INTEGER NOT NULL
+  ) STRICT;
+  CREATE TABLE IF NOT EXISTS top_up_ticket_change (
+    hash TEXT NOT NULL,
+    cents INTEGER NOT NULL,
+    paid INTEGER NOT NULL,
+    redeemed INTEGER NOT NULL,
+    PRIMARY KEY (hash, cents)
   ) STRICT;
   CREATE TABLE IF NOT EXISTS top_up_redemptions (
     request_hash TEXT PRIMARY KEY,
@@ -158,6 +167,16 @@ export function openLedger(file: string): Ledger {
   const addRedeemed = db.prepare(
     'UPDATE top_up_tickets SET redeemed = redeemed + ? WHERE hash = ?',
   );
+  const addChangePaid = db.prepare(
+    'INSERT INTO top_up_ticket_change (hash, cents, paid, redeemed) VALUES (?, ?, ?, 0) ' +
+      'ON CONFLICT (hash, cents) DO UPDATE SET paid = paid + excluded.paid',
+  );
+  const selectChange = db.prepare(
+    'SELECT cents, paid, redeemed FROM top_up_ticket_change WHERE hash = ? ORDER BY cents DESC',
+  );
+  const addChangeRedeemed = db.prepare(
+    'UPDATE top_up_ticket_change SET redeemed = redeemed + ? WHERE hash = ? AND cents = ?',
+  );
   const selectRedemption = db.prepare(
     'SELECT ticket_hash, vouchers FROM top_up_redemptions WHERE request_hash = ?',
   );
@@ -173,7 +192,7 @@ export function openLedger(file: string): Ledger {
   const selectCoinQuote = db.prepare(`SELECT ${coinQuoteColumns} FROM coin_quotes WHERE id = ?`);
   const selectWatchedCoinQuotes = db.prepare(
     `SELECT ${coinQuoteColumns} FROM coin_quotes ` +
-      'WHERE coin = ? AND expires_at > ? AND credited < ? ORDER BY created_at, id',
+      'WHERE coin = ? AND expires_at > ? ORDER BY created_at, id',
   );
   const addCoinCredit = db.prepare('UPDATE coin_quotes SET credited = ? WHERE id = ?');
   const selectCoinTransfers = db.prepare(
@@ -228,6 +247,13 @@ export function openLedger(file: string): Ledger {
     if (row === undefined) return null;
     return { paid: integer(row.paid), redeemed: integer(row.redeemed) };
   };
+
+  const ticketChange = (hash: string): TicketChange[] =>
+    selectChange.all(hash).map((row) => ({
+      cents: integer(row.cents),
+      paid: integer(row.paid),
+      redeemed: integer(row.redeemed),
+    }));
 
   const saveQuote = (
     table: ReturnType<typeof quoteTable>,
@@ -352,8 +378,8 @@ export function openLedger(file: string): Ledger {
       const row = selectCoinQuote.get(id);
       return row === undefined ? null : coinQuoteOf(row);
     },
-    watchedCoinQuotes(coin, endedAfter, maxNotes): CoinQuote[] {
-      return selectWatchedCoinQuotes.all(coin, endedAfter, maxNotes).map(coinQuoteOf);
+    watchedCoinQuotes(coin, endedAfter): CoinQuote[] {
+      return selectWatchedCoinQuotes.all(coin, endedAfter).map(coinQuoteOf);
     },
     coinTransfers(quoteId): CoinTransferRecord[] {
       return selectCoinTransfers.all(quoteId).map((row) => ({
@@ -367,7 +393,7 @@ export function openLedger(file: string): Ledger {
     seeCoinTransfer(quoteId, txid, amount, at) {
       upsertCoinTransfer.run(quoteId, txid, amount.toString(), at, at);
     },
-    settleCoinQuote(quoteId, worths, notes): number {
+    settleCoinQuote(quoteId, worths, cents): number {
       return transaction(
         (): number => {
           for (const worth of worths) {
@@ -376,10 +402,12 @@ export function openLedger(file: string): Ledger {
           const row = selectCoinQuote.get(quoteId);
           if (row === undefined) throw new Error('A coin quote to settle is missing.');
           const quote = coinQuoteOf(row);
-          const added = notes - quote.credited;
+          const added = cents - quote.credited;
           if (added > 0) {
-            addCoinCredit.run(notes, quoteId);
-            addPaid.run(quote.ticketHash, added);
+            addCoinCredit.run(cents, quoteId);
+            const { dollars, change } = splitCents(added);
+            if (dollars > 0) addPaid.run(quote.ticketHash, dollars);
+            for (const [kind, count] of change) addChangePaid.run(quote.ticketHash, kind, count);
           }
           return Math.max(added, 0);
         },
@@ -415,6 +443,25 @@ export function openLedger(file: string): Ledger {
           if (current.paid - current.redeemed < vouchers) return 'short';
           insertRedemption.run(requestHash, hash, vouchers);
           addRedeemed.run(vouchers, hash);
+          return 'new';
+        },
+        (outcome) => outcome === 'new',
+      );
+    },
+    ticketChange,
+    redeemTicketChange(hash, cents, requestHash, count): TicketRedemption {
+      return transaction(
+        (): TicketRedemption => {
+          const before = selectRedemption.get(requestHash);
+          if (before !== undefined) {
+            const same = text(before.ticket_hash) === hash && integer(before.vouchers) === count;
+            return same ? 'same' : 'other';
+          }
+          const current = ticketChange(hash).find((one) => one.cents === cents);
+          if (current === undefined) return 'unpaid';
+          if (current.paid - current.redeemed < count) return 'short';
+          insertRedemption.run(requestHash, hash, count);
+          addChangeRedeemed.run(count, hash, cents);
           return 'new';
         },
         (outcome) => outcome === 'new',

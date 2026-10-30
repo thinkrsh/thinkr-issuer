@@ -14,6 +14,7 @@ import { CLAIM_BURN } from '../src/hold/transfer-claims.js';
 import { openHoldStore } from '../src/node/hold-store.js';
 import { openLedger } from '../src/node/ledger.js';
 import type { HolderKeys } from '../src/credit/holder-keys.js';
+import type { ChangeKeys } from '../src/credit/change-keys.js';
 import { noteKeyFromPem } from '../src/node/note-key.js';
 
 export const TEST_CLIENT = 'client-1';
@@ -34,6 +35,12 @@ function testKey(): ReturnType<typeof noteKeyFromPem> {
     }) as string,
   );
 }
+
+/** The keys of the notes of change of the tests. */
+export const TEST_CHANGE_KEYS: ChangeKeys = new Map([
+  [10, testKey()],
+  [1, testKey()],
+]);
 
 /** The holder keys of the tests: October and November of 2026. */
 export const TEST_HOLDER_KEYS: HolderKeys = new Map([
@@ -129,6 +136,7 @@ export function createTestApp(
       clientAddressHeader: null,
       noteKeyFile: 'unused-in-tests.pem',
       holderKeysDir: 'unused-in-tests',
+      changeKeysDir: null,
       databaseFile: ':memory:',
       testnetPayers: [],
       chainRpcUrl: options.chainRpcUrl ?? null,
@@ -141,6 +149,7 @@ export function createTestApp(
     noteKey: TEST_NOTE_KEY,
     holdStore,
     holderKeys: TEST_HOLDER_KEYS,
+    changeKeys: TEST_CHANGE_KEYS,
     claimDeposits,
     fetch: fetchMock,
     now: options.now ?? (() => Date.now()),

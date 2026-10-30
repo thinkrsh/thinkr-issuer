@@ -80,8 +80,8 @@ app runs it in its settings, and its notes stay blind as in every top-up.
    of its own, so a payment needs no signature.
 3. Every 15 seconds the issuer asks the wallet what came in to the addresses of
    its quotes. A payment counts once a block holds it.
-4. The notes that the payment buys join the ticket. The chat app fetches them as
-   for any top-up of a ticket.
+4. The credit that the payment buys joins the ticket as notes. The chat app
+   fetches them as for any top-up of a ticket.
 
 The wallets hold view keys only: they can see what comes in, and can never
 spend it. The spend keys stay with the owner.
@@ -94,11 +94,13 @@ spend it. The spend keys stay with the owner.
   block holds the payment. The issuer never asks for a transaction, so the
   second server cannot tell which payment Thinkr waits for.
 
-A payment counts for what it is worth, in whole dollars of credit, up to the cap
-of one top-up. A payment that the issuer first sees within 30 minutes after its
-quote ends keeps the price of its quote. A later one counts at the price of
-then, so that an old quote is no bet on a falling coin. The issuer watches each
-address for 30 days.
+A payment counts for all that it is worth, to the nearest cent, whatever the
+amount of its quote. Whole dollars come as notes of $1, and the rest as notes of
+$0.10 and $0.01. Each kind has a key of its own, which `npm run change-keys`
+makes, so these notes stay blind as every note does. A payment that the issuer
+first sees within 30 minutes after its quote ends keeps the price of its quote.
+A later one counts at the price of then, so that an old quote is no bet on a
+falling coin. The issuer watches each address for 30 days.
 
 The prices come from the last trades at Kraken and Bitfinex, read each minute.
 The issuer keeps the lower price of the two, and a quote takes the lower of the

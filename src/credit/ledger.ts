@@ -27,6 +27,13 @@ export interface TopUpTicket {
   readonly redeemed: number;
 }
 
+/** The notes of one kind of change on a ticket (credit/change-keys.ts), by their cents. */
+export interface TicketChange {
+  readonly cents: number;
+  readonly paid: number;
+  readonly redeemed: number;
+}
+
 /**
  * What became of a fetch of the vouchers of a ticket: 'same' when these blinded vouchers fetched
  * them before; 'unpaid' when no payment reached the ticket; 'short' when it has fewer left;
@@ -86,7 +93,7 @@ export interface CoinQuote {
   readonly address: string;
   /** The index of the address in the account of the wallet. */
   readonly addressIndex: number;
-  /** The notes that the quote asked for. */
+  /** The notes that the quote asked for, which set its amount and no limit on what it adds. */
   readonly notes: number;
   /** What to pay for them, in the smallest unit of the coin. */
   readonly amount: bigint;
@@ -95,7 +102,7 @@ export interface CoinQuote {
   readonly createdAt: number;
   /** In milliseconds since 1970: until then the address holds its amount. */
   readonly expiresAt: number;
-  /** The notes that its payments added to the ticket so far. */
+  /** The credit that its payments added to the ticket so far, in cents. */
   readonly credited: number;
 }
 
@@ -148,6 +155,15 @@ export interface Ledger {
    * fetched before, so that a lost answer can be asked for again.
    */
   redeemTicket: (hash: string, requestHash: string, vouchers: number) => TicketRedemption;
+  /** The notes of change of a ticket, by their cents. */
+  ticketChange: (hash: string) => TicketChange[];
+  /** As `redeemTicket`, for `count` notes of change of `cents`. */
+  redeemTicketChange: (
+    hash: string,
+    cents: number,
+    requestHash: string,
+    count: number,
+  ) => TicketRedemption;
   /** Every payment in THKR, the oldest first. */
   tokenPayments: () => TokenPaymentRecord[];
   /** Every payment that bought vouchers, in USDG or THKR, the oldest first. */
@@ -160,20 +176,18 @@ export interface Ledger {
   saveCoinQuote: (quote: CoinQuote) => void;
   /** The quote of this id, or null when there is none. */
   coinQuote: (id: string) => CoinQuote | null;
-  /**
-   * The quotes of `coin` that ended after `endedAfter` and that may still add notes: their
-   * payments did not reach `maxNotes`. The oldest first.
-   */
-  watchedCoinQuotes: (coin: CoinId, endedAfter: number, maxNotes: number) => CoinQuote[];
+  /** The quotes of `coin` that ended after `endedAfter`, the oldest first. */
+  watchedCoinQuotes: (coin: CoinId, endedAfter: number) => CoinQuote[];
   /** The payments that came in to the address of a quote, the first seen first. */
   coinTransfers: (quoteId: string) => CoinTransferRecord[];
   /** Notes that a payment to the address of a quote was seen at `at`: its first sighting stays. */
   seeCoinTransfer: (quoteId: string, txid: string, amount: bigint, at: number) => void;
   /**
-   * In one step: the worth of the payments that count now, and the notes that their quote has
-   * added in all, `notes`, of which the new ones join its ticket. Returns how many joined.
+   * In one step: the worth of the payments that count now, and the credit that their quote has
+   * added in all, `cents`, of which the new part joins its ticket as whole notes and notes of
+   * change. Returns the cents that joined.
    */
-  settleCoinQuote: (quoteId: string, worths: readonly CoinTransferWorth[], notes: number) => number;
+  settleCoinQuote: (quoteId: string, worths: readonly CoinTransferWorth[], cents: number) => number;
   /** Keeps a reading of the price of a coin, and drops its readings before `dropBefore`. */
   addCoinPrice: (coin: CoinId, sample: PriceSample, dropBefore: number) => void;
   /** The readings of the price of a coin since `since`, the oldest first. */

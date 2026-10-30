@@ -11,6 +11,7 @@ import { MESSAGES } from './config/messages.js';
 import { SERVER } from './config/server.js';
 import { TOKEN_PAYMENT, type TokenPaymentConfig } from './config/token.js';
 import type { CoinWallets } from './credit/coin-wallet.js';
+import type { ChangeKeys } from './credit/change-keys.js';
 import type { HolderKeys } from './credit/holder-keys.js';
 import type { Ledger } from './credit/ledger.js';
 import type { NoteKey } from './credit/note-key.js';
@@ -39,6 +40,8 @@ export interface AppDeps {
   readonly holdStore: HoldStore;
   /** Sign the holder vouchers, one key for each month (decision 189). */
   readonly holderKeys: HolderKeys;
+  /** Sign the notes of change of a top-up in a privacy coin; none while no coin is open. */
+  readonly changeKeys: ChangeKeys;
   /** The factory of the deposit addresses of claims by transfer, and its claim wallet. */
   readonly claimDeposits: ClaimDeposits;
   /** Payment in THKR; unset, TOKEN_PAYMENT of config/token.ts. Tests name a wallet of their own. */

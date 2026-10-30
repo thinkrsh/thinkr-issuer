@@ -12,14 +12,22 @@ import type {
   TopUpTicketResponse,
 } from '../src/contract.js';
 import { readCoinPrices, unitsPerUsdAt } from '../src/credit/coin-price.js';
-import { coinAmountFor, coinText, coinUri, notesFor } from '../src/credit/coin-top-up.js';
+import { centsFor, coinAmountFor, coinText, coinUri } from '../src/credit/coin-top-up.js';
+import { splitCents } from '../src/credit/change-keys.js';
 import type { CoinWallet, CoinWallets, IncomingTransfer } from '../src/credit/coin-wallet.js';
 import { watchCoin, type CoinWatchDeps, type WatchMemory } from '../src/credit/coin-watch.js';
 import type { Ledger } from '../src/credit/ledger.js';
+import type { NoteKey } from '../src/credit/note-key.js';
 import { fromBase64Url, randomBytes, sha256, toBase64Url, toHex } from '../src/lib/bytes.js';
 import { IssuerError } from '../src/lib/errors.js';
 import { openLedger } from '../src/node/ledger.js';
-import { createTestApp, TEST_NOTE_KEY, type FetchMock, type TestApp } from './helpers.js';
+import {
+  createTestApp,
+  TEST_CHANGE_KEYS,
+  TEST_NOTE_KEY,
+  type FetchMock,
+  type TestApp,
+} from './helpers.js';
 import { blindNotes, finalizeNote, verifyNote } from './notes.js';
 
 /** The URL of a call to fetch. */
@@ -31,6 +39,13 @@ function urlOf(input: string | URL | Request | undefined): string {
 
 const NOW = Date.UTC(2026, 9, 29, 12, 0, 0);
 const MINUTE = 60_000;
+
+/** The key of the notes of change of these cents, in the tests. */
+function keyOfChange(cents: number): NoteKey {
+  const key = TEST_CHANGE_KEYS.get(cents);
+  if (key === undefined) throw new Error('No key of change for these cents.');
+  return key;
+}
 /** The prices of 29 Oct 2026 at Kraken: XMR $604.22, ZEC $1,347.53. */
 const XMR_PER_USD = unitsPerUsdAt('604.22', COINS.xmr.decimals) ?? 0n;
 const ZEC_PER_USD = unitsPerUsdAt('1347.53', COINS.zec.decimals) ?? 0n;
@@ -186,11 +201,32 @@ describe('the amounts of a top-up in a privacy coin', () => {
     expect(coinUri('zec', 'u1abc', 371_000n)).toBe('zcash:u1abc?amount=0.00371');
   });
 
-  it('buys whole notes, up to the cap of one top-up', () => {
-    const micros = CREDIT.microsPerUsd;
-    expect(notesFor(4.99 * micros)).toBe(4);
-    expect(notesFor(5 * micros)).toBe(5);
-    expect(notesFor(5_000 * micros)).toBe(MAX_TOP_UP_NOTES);
+  it('buys credit to the nearest cent, with no cap', () => {
+    expect(centsFor(989_099)).toBe(99);
+    expect(centsFor(1_001_184)).toBe(100);
+    expect(centsFor(4_994_000)).toBe(499);
+    expect(centsFor(4_000)).toBe(0);
+    expect(centsFor(5_000 * CREDIT.microsPerUsd)).toBe(500_000);
+    expect(MAX_TOP_UP_NOTES).toBeLessThan(5_000);
+  });
+
+  it('splits credit into whole dollars and notes of change', () => {
+    expect(splitCents(137)).toEqual({
+      dollars: 1,
+      change: new Map([
+        [10, 3],
+        [1, 7],
+      ]),
+    });
+    expect(splitCents(99)).toEqual({
+      dollars: 0,
+      change: new Map([
+        [10, 9],
+        [1, 9],
+      ]),
+    });
+    expect(splitCents(500)).toEqual({ dollars: 5, change: new Map() });
+    expect(splitCents(1)).toEqual({ dollars: 0, change: new Map([[1, 1]]) });
   });
 
   it('keeps the lower price of the two sources, and names a source that fails', async () => {
@@ -251,7 +287,7 @@ describe('top-ups in privacy coins (29 Oct 2026)', () => {
       usd: 5,
       expiresAt: NOW + COIN_TOP_UP.quoteTtlMs,
       state: 'waiting',
-      credited: 0,
+      creditedUsd: 0,
     });
     expect(quote.id).toMatch(/^[0-9a-f]{32}$/);
     // The wallet names the address by the quote, never by the ticket.
@@ -314,9 +350,12 @@ describe('top-ups in privacy coins (29 Oct 2026)', () => {
     expect(await ticketOf(testApp.app, ticket.hash)).toMatchObject({ paid: 0 });
     clock.now += 2 * MINUTE;
     xmr.transfers = [paid(1, amount, 1)];
-    expect(await watch('xmr')).toBe(5);
+    expect(await watch('xmr')).toBe(500);
     expect(await watch('xmr')).toBe(0);
-    expect(await quoteOf(testApp.app, quote.id)).toMatchObject({ state: 'credited', credited: 5 });
+    expect(await quoteOf(testApp.app, quote.id)).toMatchObject({
+      state: 'credited',
+      creditedUsd: 5,
+    });
     expect(await ticketOf(testApp.app, ticket.hash)).toMatchObject({ paid: 5, redeemed: 0 });
     const notes = await blindNotes(TEST_NOTE_KEY, 5);
     const response = await send(testApp.app, 'top-ups/tickets/redeem', {
@@ -334,17 +373,96 @@ describe('top-ups in privacy coins (29 Oct 2026)', () => {
     }
   });
 
-  it('counts a short payment in whole notes, and the rest when it comes', async () => {
+  it('turns whatever a payment is worth into credit, with notes of change', async () => {
     const { testApp, ledger, xmr, watch } = coinTest();
     seedPrices(ledger, 'xmr', XMR_PER_USD, NOW);
     const ticket = await newTicket();
     const quote = await openQuote(testApp.app, ticket.hash, 'xmr', 5);
-    xmr.transfers = [paid(1, (XMR_PER_USD * 45n) / 10n, 1)];
-    expect(await watch('xmr')).toBe(4);
-    xmr.transfers = [...xmr.transfers, paid(1, (XMR_PER_USD * 6n) / 10n, 1, OTHER_TXID)];
-    expect(await watch('xmr')).toBe(1);
-    expect(await quoteOf(testApp.app, quote.id)).toMatchObject({ credited: 5 });
-    expect(await ticketOf(testApp.app, ticket.hash)).toMatchObject({ paid: 5 });
+    xmr.transfers = [paid(1, (XMR_PER_USD * 137n) / 100n, 1)];
+    expect(await watch('xmr')).toBe(137);
+    expect(await quoteOf(testApp.app, quote.id)).toMatchObject({
+      state: 'credited',
+      creditedUsd: 1.37,
+    });
+    const status = await ticketOf(testApp.app, ticket.hash);
+    expect(status).toMatchObject({ paid: 1, redeemed: 0 });
+    expect(status.change).toMatchObject([
+      { keyId: keyOfChange(10).keyId, paid: 3, redeemed: 0, voucherUsd: 0.1 },
+      { keyId: keyOfChange(1).keyId, paid: 7, redeemed: 0, voucherUsd: 0.01 },
+    ]);
+  });
+
+  it('adds a later payment to what the quote has credited, by what it adds', async () => {
+    const { testApp, ledger, xmr, watch } = coinTest();
+    seedPrices(ledger, 'xmr', XMR_PER_USD, NOW);
+    const ticket = await newTicket();
+    const quote = await openQuote(testApp.app, ticket.hash, 'xmr', 1);
+    xmr.transfers = [paid(1, (XMR_PER_USD * 99n) / 100n, 1)];
+    expect(await watch('xmr')).toBe(99);
+    xmr.transfers = [...xmr.transfers, paid(1, (XMR_PER_USD * 2n) / 100n, 1, OTHER_TXID)];
+    expect(await watch('xmr')).toBe(2);
+    expect(await quoteOf(testApp.app, quote.id)).toMatchObject({ creditedUsd: 1.01 });
+    const status = await ticketOf(testApp.app, ticket.hash);
+    expect(status).toMatchObject({ paid: 0 });
+    expect(status.change).toMatchObject([{ paid: 9 }, { paid: 11 }]);
+  });
+
+  it('takes more than the cap of one top-up, since a refusal would strand the coins', async () => {
+    const { testApp, ledger, xmr, watch } = coinTest();
+    seedPrices(ledger, 'xmr', XMR_PER_USD, NOW);
+    const ticket = await newTicket();
+    await openQuote(testApp.app, ticket.hash, 'xmr', 1);
+    xmr.transfers = [paid(1, XMR_PER_USD * 250n, 1)];
+    expect(await watch('xmr')).toBe(25_000);
+    expect(await ticketOf(testApp.app, ticket.hash)).toMatchObject({ paid: 250 });
+  });
+
+  it('signs notes of change under their own key, once, and never under another', async () => {
+    const { testApp, ledger, xmr, watch } = coinTest();
+    seedPrices(ledger, 'xmr', XMR_PER_USD, NOW);
+    const ticket = await newTicket();
+    await openQuote(testApp.app, ticket.hash, 'xmr', 1);
+    xmr.transfers = [paid(1, (XMR_PER_USD * 3n) / 100n, 1)];
+    await watch('xmr');
+    const key = keyOfChange(1);
+    const notes = await blindNotes(key, 3);
+    const body = {
+      ticket: ticket.secret,
+      keyId: key.keyId,
+      blinded: notes.map((note) => toBase64Url(note.blinded)),
+    };
+    const response = await send(testApp.app, 'top-ups/tickets/redeem', body);
+    expect(response.status).toBe(200);
+    const { blindSignatures } = (await response.json()) as ClaimResponse;
+    for (const [index, note] of notes.entries()) {
+      const signature = fromBase64Url(blindSignatures[index] ?? '');
+      expect(verifyNote(key, await finalizeNote(key, note, signature))).toBe(true);
+    }
+    // A lost answer can be asked for again, and it counts once.
+    const again = await send(testApp.app, 'top-ups/tickets/redeem', body);
+    expect(again.status).toBe(200);
+    const status = await ticketOf(testApp.app, ticket.hash);
+    expect(status.change).toMatchObject([{ paid: 0 }, { paid: 3, redeemed: 3 }]);
+    // The same blinded notes under the key of a dollar get nothing: this ticket bought no dollar.
+    const dearer = await send(testApp.app, 'top-ups/tickets/redeem', {
+      ...body,
+      keyId: TEST_NOTE_KEY.keyId,
+    });
+    expect(dearer.status).toBe(404);
+    // No more than the ticket bought.
+    const tooMany = await send(testApp.app, 'top-ups/tickets/redeem', {
+      ticket: ticket.secret,
+      keyId: key.keyId,
+      blinded: (await blindNotes(key, 1)).map((note) => toBase64Url(note.blinded)),
+    });
+    expect(tooMany.status).toBe(409);
+  });
+
+  it('asks nothing of a ticket with no change, and keeps its fields for the dashboard', async () => {
+    const { testApp } = coinTest();
+    const status = await ticketOf(testApp.app, (await newTicket()).hash);
+    expect(status).toMatchObject({ paid: 0, redeemed: 0 });
+    expect(status.change.map((one) => one.paid)).toEqual([0, 0]);
   });
 
   it('counts a payment seen in time at the price of its quote, and a late one at the price of then', async () => {
@@ -364,8 +482,8 @@ describe('top-ups in privacy coins (29 Oct 2026)', () => {
       paid(2, BigInt(late.amount), 1, OTHER_TXID),
     ];
     await watch('xmr', true);
-    expect((await quoteOf(testApp.app, inTime.id)).credited).toBe(4);
-    expect((await quoteOf(testApp.app, late.id)).credited).toBe(2);
+    expect((await quoteOf(testApp.app, inTime.id)).creditedUsd).toBe(4);
+    expect((await quoteOf(testApp.app, late.id)).creditedUsd).toBe(2);
     expect(await ticketOf(testApp.app, ticket.hash)).toMatchObject({ paid: 6 });
   });
 
@@ -394,7 +512,7 @@ describe('top-ups in privacy coins (29 Oct 2026)', () => {
     fetchMock.mockImplementation(() => Promise.resolve(Response.json({ data: [] })));
     expect(await watch('zec')).toBe(0);
     fetchMock.mockImplementation(() => block([OTHER_TXID, TXID]));
-    expect(await watch('zec')).toBe(3);
+    expect(await watch('zec')).toBe(300);
     expect(await ticketOf(testApp.app, ticket.hash)).toMatchObject({ paid: 3 });
   });
 
@@ -432,6 +550,6 @@ describe('top-ups in privacy coins (29 Oct 2026)', () => {
     await expect(watch('xmr')).rejects.toThrow();
     xmr.down = false;
     xmr.transfers = [paid(1, BigInt(quote.amount), 1)];
-    expect(await watch('xmr')).toBe(1);
+    expect(await watch('xmr')).toBe(100);
   });
 });

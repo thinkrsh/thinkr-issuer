@@ -227,6 +227,18 @@ export interface TopUpTicketResponse {
   /** The RSA public key, SPKI DER in base64url. */
   publicKey: string;
   voucherUsd: number;
+  /** The notes of change of the ticket, by their key: a top-up in a privacy coin brings them. */
+  change: TicketChangeNotes[];
+}
+
+/** The notes of one kind of change on a ticket, with what the chat app needs to fetch them. */
+export interface TicketChangeNotes {
+  paid: number;
+  redeemed: number;
+  keyId: string;
+  /** The RSA public key, SPKI DER in base64url. */
+  publicKey: string;
+  voucherUsd: number;
 }
 
 /**
@@ -306,14 +318,14 @@ export interface CoinQuoteResponse {
   amount: string;
   /** The payment link that wallets open, with the amount in whole coins. */
   uri: string;
-  /** The notes that the amount buys, and their worth. */
+  /** The notes that the amount buys, and their worth: what the form asked for, as a guide. */
   notes: number;
   usd: number;
   expiresAt: number;
   confirmations: number;
   state: CoinQuoteState;
-  /** The notes that its payments added to the ticket so far. */
-  credited: number;
+  /** The credit that its payments added to the ticket so far, in USD, to the cent. */
+  creditedUsd: number;
 }
 
 /**

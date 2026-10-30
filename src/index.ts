@@ -18,6 +18,7 @@ import { startTokenPriceSampler } from './credit/token-price.js';
 import { startHoldSync } from './hold/sync.js';
 import { IssuerError } from './lib/errors.js';
 import { writeLogLine } from './lib/log.js';
+import { changeKeysFromDir } from './node/change-keys.js';
 import { claimDepositsOnChain, operatorKeyFrom } from './node/claim-deposits.js';
 import { openHoldStore } from './node/hold-store.js';
 import { holderKeysFromDir } from './node/holder-keys.js';
@@ -29,6 +30,7 @@ const noteKey = noteKeyFromPem(readFileSync(env.noteKeyFile, 'utf8'));
 const ledger = openLedger(env.databaseFile);
 const holdStore = openHoldStore(env.databaseFile);
 const holderKeys = holderKeysFromDir(env.holderKeysDir);
+const changeKeys = env.changeKeysDir === null ? new Map() : changeKeysFromDir(env.changeKeysDir);
 const claimDeposits = claimDepositsOnChain({
   rpcUrl: env.chainRpcUrl,
   factory: env.claimFactory,
@@ -73,6 +75,7 @@ const app = createApp({
   noteKey,
   holdStore,
   holderKeys,
+  changeKeys,
   claimDeposits,
   coinWallets,
 });

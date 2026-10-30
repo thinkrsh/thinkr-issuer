@@ -33,6 +33,15 @@ export const CREDIT = {
   ticketBytes: 32,
 } as const;
 
+/** Cents in a dollar. */
+export const CENTS_PER_USD = 100;
+
+/**
+ * The notes of change, by the cents that one of them holds (credit/change-keys.ts). Must match
+ * CHANGE_CENTS in apps/proxy.
+ */
+export const CHANGE_CENTS = [10, 1] as const;
+
 /** The most vouchers that one top-up may buy: the cap of decision 95, in vouchers. */
 export const MAX_TOP_UP_NOTES = Math.floor(CREDIT.maxTopUpUsd / CREDIT.voucherUsd);
 

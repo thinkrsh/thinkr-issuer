@@ -16,6 +16,7 @@ describe('readEnv', () => {
       clientAddressHeader: null,
       noteKeyFile: '../../secret/voucher-dev.pem',
       holderKeysDir: '../../secret/holder-keys-dev',
+      changeKeysDir: null,
       databaseFile: '.data/ledger.db',
       testnetPayers: [],
       chainRpcUrl: null,
@@ -29,6 +30,7 @@ describe('readEnv', () => {
     const coins = {
       ...LAPTOP,
       COIN_TOP_UPS: 'zec, xmr',
+      CHANGE_KEYS_DIR: '/etc/thinkr-issuer/change-keys',
       MONERO_WALLET_RPC_URL: 'http://127.0.0.1:18083',
       ZCASH_WALLETD_URL: 'http://127.0.0.1:8000',
     };
@@ -36,6 +38,14 @@ describe('readEnv', () => {
       xmr: 'http://127.0.0.1:18083',
       zec: 'http://127.0.0.1:8000',
     });
+    expect(readEnv(coins).changeKeysDir).toBe('/etc/thinkr-issuer/change-keys');
+    // A coin needs the keys of change too, and they are read only for a coin.
+    expect(() =>
+      readEnv({ ...LAPTOP, COIN_TOP_UPS: 'xmr', MONERO_WALLET_RPC_URL: 'http://127.0.0.1:18083' }),
+    ).toThrow(/CHANGE_KEYS_DIR/);
+    expect(
+      readEnv({ ...LAPTOP, CHANGE_KEYS_DIR: '/etc/thinkr-issuer/change-keys' }).changeKeysDir,
+    ).toBeNull();
     expect(() => readEnv({ ...LAPTOP, COIN_TOP_UPS: 'xmr' })).toThrow(/MONERO_WALLET_RPC_URL/);
     expect(() => readEnv({ ...LAPTOP, COIN_TOP_UPS: 'btc' })).toThrow(/COIN_TOP_UPS/);
     // A wallet that no coin names is not called.

@@ -18,7 +18,7 @@ import { z } from 'zod';
 import { HOLD } from '../config/hold.js';
 import { MESSAGES } from '../config/messages.js';
 import { PAYMENTS } from '../config/payments.js';
-import { CREDIT, MAX_TOP_UP_NOTES } from '../config/credit.js';
+import { CENTS_PER_USD, CREDIT, MAX_TOP_UP_NOTES } from '../config/credit.js';
 import type { TokenPaymentConfig } from '../config/token.js';
 import {
   claimRequestSchema,
@@ -54,6 +54,7 @@ import {
   tokenPaymentsOf,
   tokenTopUpMessage,
 } from '../credit/token-payment.js';
+import { changeCentsOf, type ChangeKeys } from '../credit/change-keys.js';
 import type { NoteKey } from '../credit/note-key.js';
 import type { HoldStore } from '../hold/store.js';
 import { parseBody, readJson } from '../lib/body.js';
@@ -69,6 +70,8 @@ export interface IssuerRouteDeps extends PaymentDeps {
   readonly ticketLimiter: RateLimiter;
   readonly ledger: Ledger;
   readonly noteKey: NoteKey;
+  /** Sign the notes of change of a ticket. */
+  readonly changeKeys: ChangeKeys;
   /** The wallets that may top up while payment runs on a testnet, in lower case. */
   readonly testnetPayers: readonly string[];
   /** Payment in THKR: TOKEN_PAYMENT of config/token.ts. */
@@ -174,27 +177,52 @@ export function createIssuerRoute(deps: IssuerRouteDeps): Hono {
       const hash = ticketHashSchema.safeParse(c.req.param('hash'));
       if (!hash.success) throw new IssuerError('invalid_request', MESSAGES.ticketHashInvalid);
       const ticket = deps.ledger.ticket(hash.data);
+      const change = deps.ledger.ticketChange(hash.data);
       return c.json<TopUpTicketResponse>({
         paid: ticket?.paid ?? 0,
         redeemed: ticket?.redeemed ?? 0,
         keyId: deps.noteKey.keyId,
         publicKey: toBase64Url(deps.noteKey.publicKey),
         voucherUsd: CREDIT.voucherUsd,
+        change: [...deps.changeKeys].map(([cents, key]) => {
+          const kind = change.find((one) => one.cents === cents);
+          return {
+            paid: kind?.paid ?? 0,
+            redeemed: kind?.redeemed ?? 0,
+            keyId: key.keyId,
+            publicKey: toBase64Url(key.publicKey),
+            voucherUsd: cents / CENTS_PER_USD,
+          };
+        }),
       });
     })
     .post('/top-ups/tickets/redeem', async (c) => {
       takeRequest(deps, c, deps.ticketLimiter);
       const request = parseBody(ticketRedeemRequestSchema, await readJson(c));
       const hash = toHex(await sha256(fromBase64Url(request.ticket)));
-      const blinded = blindedOf(deps.noteKey, request);
+      const cents = changeCentsOf(deps.changeKeys, request.keyId);
+      const key = cents === null ? deps.noteKey : deps.changeKeys.get(cents);
+      if (key === undefined) throw new IssuerError('key_changed', MESSAGES.keyChanged);
+      const blinded = blindedOf(key, request);
       // Signs first, so that vouchers count as fetched only once their signatures exist.
-      const blindSignatures = blinded.map((one) => toBase64Url(blindSign(deps.noteKey, one)));
-      const outcome = deps.ledger.redeemTicket(hash, await requestHash(blinded), blinded.length);
+      const blindSignatures = blinded.map((one) => toBase64Url(blindSign(key, one)));
+      const outcome =
+        cents === null
+          ? deps.ledger.redeemTicket(hash, await requestHash(blinded), blinded.length)
+          : deps.ledger.redeemTicketChange(
+              hash,
+              cents,
+              await changeRequestHash(cents, blinded),
+              blinded.length,
+            );
       if (outcome === 'unpaid') {
         throw new IssuerError('ticket_unknown', MESSAGES.topUpTicketUnpaid);
       }
       if (outcome === 'short') {
-        const ticket = deps.ledger.ticket(hash);
+        const ticket =
+          cents === null
+            ? deps.ledger.ticket(hash)
+            : (deps.ledger.ticketChange(hash).find((one) => one.cents === cents) ?? null);
         const left = ticket === null ? 0 : ticket.paid - ticket.redeemed;
         throw new IssuerError('ticket_used', MESSAGES.topUpTicketShort(left));
       }
@@ -297,6 +325,14 @@ function takeRequest(deps: IssuerRouteDeps, c: Context, limiter = deps.limiter):
 }
 
 /** The blinded vouchers of a top-up, made with the key that signs them today. */
+/**
+ * The hash that names the blinded notes of a fetch of change, with their kind in it, so that a fetch
+ * of cheap notes can never be asked for again under the key of dear ones.
+ */
+function changeRequestHash(cents: number, blinded: readonly Uint8Array[]): Promise<string> {
+  return requestHash([new TextEncoder().encode(`change:${String(cents)}:`), ...blinded]);
+}
+
 function blindedOf(
   key: NoteKey,
   request: { readonly keyId: string; readonly blinded: readonly string[] },

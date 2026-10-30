@@ -2,10 +2,11 @@
 // coin, and the notes; the issuer takes a new address from the view-only wallet of the coin, prices
 // the notes in the coin, and keeps the quote. Once a payment to that address has its blocks, it
 // counts at the price of its quote, or at the price of then when it came after the quote ended, and
-// the notes that the payments are worth join the ticket, which the chat app fetches as for any
-// top-up. A payment of the wrong amount still counts for what it is worth, in whole notes.
+// the credit that the payments are worth joins the ticket, which the chat app fetches as for any
+// top-up. The amount of a quote is a guide: whatever comes in becomes credit, to the cent (the owner,
+// 31 Oct 2026: "amount cuman kek jadi hitungan aja harus kirim berapa zec").
 import { COIN_IDS, COIN_TOP_UP, COINS, type CoinId } from '../config/coins.js';
-import { CREDIT, MAX_TOP_UP_NOTES } from '../config/credit.js';
+import { CENTS_PER_USD, CREDIT, MAX_TOP_UP_NOTES } from '../config/credit.js';
 import { MESSAGES } from '../config/messages.js';
 import type {
   CoinInfo,
@@ -21,7 +22,7 @@ import type { CoinWallets } from './coin-wallet.js';
 import type { CoinQuote, CoinTransferRecord, Ledger } from './ledger.js';
 
 const MICROS_PER_USD = BigInt(CREDIT.microsPerUsd);
-const MICROS_PER_NOTE = CREDIT.voucherUsd * CREDIT.microsPerUsd;
+const MICROS_PER_CENT = CREDIT.microsPerUsd / CENTS_PER_USD;
 /** The status of a quote while the price of its coin is unknown, as for THKR: try again later. */
 const PRICE_UNKNOWN_STATUS = 409;
 
@@ -67,9 +68,9 @@ export function usdMicrosOf(amount: bigint, unitsPerUsd: bigint): number {
   return Number((amount * MICROS_PER_USD) / unitsPerUsd);
 }
 
-/** The notes that payments worth `usdMicros` in all buy: whole notes, up to the cap of one top-up. */
-export function notesFor(usdMicros: number): number {
-  return Math.min(MAX_TOP_UP_NOTES, Math.floor(usdMicros / MICROS_PER_NOTE));
+/** The credit in cents that payments worth `usdMicros` in all buy: all of it, to the nearest cent. */
+export function centsFor(usdMicros: number): number {
+  return Math.round(usdMicros / MICROS_PER_CENT);
 }
 
 /**
@@ -104,7 +105,7 @@ export function coinUri(coin: CoinId, address: string, amount: bigint): string {
 }
 
 /**
- * Where a quote stands: notes added; a payment seen lately that waits for its blocks; its time
+ * Where a quote stands: credit added; a payment seen lately that waits for its blocks; its time
  * ended with nothing; or it waits.
  */
 export function coinQuoteState(
@@ -114,7 +115,7 @@ export function coinQuoteState(
 ): CoinQuoteState {
   if (quote.credited > 0) return 'credited';
   const seen = transfers.some(
-    (transfer) => transfer.usdMicros !== null || now - transfer.lastSeenAt <= COIN_TOP_UP.seenForMs,
+    (transfer) => transfer.usdMicros === null && now - transfer.lastSeenAt <= COIN_TOP_UP.seenForMs,
   );
   if (seen) return 'seen';
   return now > quote.expiresAt ? 'expired' : 'waiting';
@@ -140,7 +141,7 @@ export function coinQuoteResponse(
     expiresAt: quote.expiresAt,
     confirmations: config.confirmations,
     state: coinQuoteState(quote, transfers, now),
-    credited: quote.credited,
+    creditedUsd: quote.credited / CENTS_PER_USD,
   };
 }
 
