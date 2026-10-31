@@ -66,6 +66,8 @@ export interface FakeClaimDeposits extends ClaimDeposits {
   readonly named: { readonly wallet: string; readonly claimId: string }[];
   readonly settles: { readonly wallet: string; readonly claimId: string }[];
   readonly refunds: { readonly wallet: string; readonly claimId: string }[];
+  /** The deposit and the token of each refund, in the order of `refunds`. */
+  readonly refundedFrom: { readonly deposit: string; readonly asset: string }[];
   burned: bigint | null;
   /** Set, the factory cannot be reached. */
   down: Error | null;
@@ -76,6 +78,7 @@ export function fakeClaimDeposits(): FakeClaimDeposits {
     named: [],
     settles: [],
     refunds: [],
+    refundedFrom: [],
     burned: CLAIM_BURN,
     down: null,
     depositAddress: (wallet, claimId) => {
@@ -88,9 +91,10 @@ export function fakeClaimDeposits(): FakeClaimDeposits {
       fake.settles.push({ wallet, claimId });
       return Promise.resolve(fake.burned);
     },
-    refund: (wallet, claimId) => {
+    refund: (wallet, claimId, deposit, asset) => {
       if (fake.down !== null) return Promise.reject(fake.down);
       fake.refunds.push({ wallet, claimId });
+      fake.refundedFrom.push({ deposit, asset });
       return Promise.resolve();
     },
   };
@@ -151,6 +155,7 @@ export function createTestApp(
       claimFactoryRetired: null,
       claimOperatorKeyFile: 'unused-in-tests.txt',
       coinWallets: {},
+      usdgTopUps: false,
     },
     coinWallets: options.coinWallets ?? {},
     ledger,

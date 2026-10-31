@@ -7,20 +7,27 @@
 // (github.com/hhanh00/zcash-walletd, read 29 Oct 2026 at v1.1.10, MIT), which serves the same
 // methods over REST, one path each: create_address and get_transfers take the same fields. The
 // prices come from Kraken and Bitfinex, both read 29 Oct 2026.
+// USDG on Robinhood Chain runs the same way since 31 Oct 2026 (the owner: "keep in chat app seperti
+// zcash"): an address of its own for each top-up, any amount, no wallet to connect, and no dashboard.
+// Its addresses come from the factory of apps/contracts (credit/usdg-wallet.ts), and its price is
+// fixed.
+import { PAYMENTS } from './payments.js';
 
 /** The coins, by the names that the routes and the ledger use. */
-export const COIN_IDS = ['xmr', 'zec'] as const;
+export const COIN_IDS = ['xmr', 'zec', 'usdg'] as const;
 export type CoinId = (typeof COIN_IDS)[number];
+
+/** The privacy coins: each has a view-only wallet beside the issuer, and a price that moves. */
+export const PRIVACY_COIN_IDS = ['xmr', 'zec'] as const;
+export type PrivacyCoinId = (typeof PRIVACY_COIN_IDS)[number];
 
 export interface CoinConfig {
   readonly name: string;
   readonly symbol: string;
+  /** The network that carries the coin, which the chat app names beside the address. */
+  readonly network: string;
   /** Decimals of the smallest unit: the piconero of Monero, the zatoshi of Zcash. */
   readonly decimals: number;
-  /** How the issuer calls the wallet: JSON-RPC 2.0 at /json_rpc, or REST at /<method>. */
-  readonly walletApi: 'json-rpc' | 'rest';
-  /** The account of the wallet whose addresses the top-ups take. */
-  readonly accountIndex: number;
   /** Blocks that must hold a payment, its own included, before it counts. */
   readonly confirmations: number;
   /**
@@ -28,53 +35,85 @@ export interface CoinConfig {
    * millionth of a coin, worth well under a cent on 29 Oct 2026 (XMR $604, ZEC $1,345 at Kraken).
    */
   readonly roundUnits: bigint;
-  /** The payment link that wallets open: its scheme, and the field of the amount in whole coins. */
-  readonly uriScheme: string;
-  readonly uriAmountField: string;
+  /**
+   * The payment link that wallets open: its scheme, and the field of the amount in whole coins. Null
+   * for a coin whose QR code holds the plain address.
+   */
+  readonly uri: { readonly scheme: string; readonly amountField: string } | null;
+  /** The smallest units that one dollar always buys, for a coin of a fixed price; else null. */
+  readonly fixedUnitsPerUsd: bigint | null;
+  /**
+   * Whether a second server checks each payment that the wallet reports, for a wallet that reads
+   * its blocks from a public server (config ZCASH_CHECK and MONERO_CHECK).
+   */
+  readonly crossCheck: boolean;
+}
+
+export interface PrivacyCoinConfig extends CoinConfig {
+  /** How the issuer calls the wallet: JSON-RPC 2.0 at /json_rpc, or REST at /<method>. */
+  readonly walletApi: 'json-rpc' | 'rest';
+  /** The account of the wallet whose addresses the top-ups take. */
+  readonly accountIndex: number;
   /** The market of the coin against the dollar at Kraken: the pair asked, and its key in the answer. */
   readonly krakenPair: string;
   readonly krakenKey: string;
   /** The market of the coin against the dollar at Bitfinex. */
   readonly bitfinexSymbol: string;
-  /**
-   * Whether a second server checks each payment that the wallet reports, for a wallet that reads
-   * its blocks from a public server (config ZCASH_CHECK). Monero reads a node of our own.
-   */
-  readonly crossCheck: boolean;
 }
 
-export const COINS: Readonly<Record<CoinId, CoinConfig>> = {
+export const PRIVACY_COINS: Readonly<Record<PrivacyCoinId, PrivacyCoinConfig>> = {
   xmr: {
     name: 'Monero',
     symbol: 'XMR',
+    network: 'Monero',
     decimals: 12,
     walletApi: 'json-rpc',
     accountIndex: 0,
     confirmations: 1,
     roundUnits: 1_000_000n,
     // The URI of the Monero wallets (monero-project, docs of the URI scheme): tx_amount in XMR.
-    uriScheme: 'monero',
-    uriAmountField: 'tx_amount',
+    uri: { scheme: 'monero', amountField: 'tx_amount' },
+    fixedUnitsPerUsd: null,
     krakenPair: 'XMRUSD',
     krakenKey: 'XXMRZUSD',
     bitfinexSymbol: 'tXMRUSD',
-    crossCheck: false,
+    // While the wallet reads a public node: false again once it reads our own (docs/COIN-TOP-UPS-GO-LIVE.md).
+    crossCheck: true,
   },
   zec: {
     name: 'Zcash',
     symbol: 'ZEC',
+    network: 'Zcash',
     decimals: 8,
     walletApi: 'rest',
     accountIndex: 0,
     confirmations: 1,
     roundUnits: 100n,
     // ZIP 321, the payment requests of Zcash: amount in ZEC.
-    uriScheme: 'zcash',
-    uriAmountField: 'amount',
+    uri: { scheme: 'zcash', amountField: 'amount' },
+    fixedUnitsPerUsd: null,
     krakenPair: 'ZECUSD',
     krakenKey: 'XZECZUSD',
     bitfinexSymbol: 'tZECUSD',
     crossCheck: true,
+  },
+};
+
+export const COINS: Readonly<Record<CoinId, CoinConfig>> = {
+  ...PRIVACY_COINS,
+  usdg: {
+    name: PAYMENTS.token.symbol,
+    symbol: PAYMENTS.token.symbol,
+    network: PAYMENTS.network.name,
+    decimals: PAYMENTS.token.decimals,
+    // As the count of the hold waits (HOLD.confirmations): about 2 seconds at 9.4 blocks a second.
+    confirmations: 20,
+    roundUnits: 1n,
+    // The link of EIP-681 names the token contract first, so a wallet that misreads it could pay
+    // the token instead of the deposit. The amount is only a guide, so the plain address is enough.
+    uri: null,
+    fixedUnitsPerUsd: 10n ** BigInt(PAYMENTS.token.decimals),
+    crossCheck: false,
   },
 };
 
@@ -103,6 +142,31 @@ export const COIN_TOP_UP = {
   walletTimeoutMs: 10_000,
   /** Bytes of the random id of a quote, which only the chat app that opened it knows. */
   quoteIdBytes: 16,
+} as const;
+
+/**
+ * How top-ups in USDG read Robinhood Chain and move what they took (credit/usdg-wallet.ts). The public
+ * RPC, read 31 Oct 2026, takes at most 1,000 selectors and answers at most 10,000 logs in one read of
+ * the logs, and USDG moved about 417 times in 1,000 blocks.
+ */
+export const USDG_TOP_UP = {
+  /** The blocks of one read of the logs. */
+  logWindowBlocks: 5_000,
+  /** The most reads of blocks in one round, so that a long gap closes over several rounds. */
+  maxWindowsPerRound: 20,
+  /** The addresses of one read. */
+  addressesPerRead: 500,
+  /** With more addresses to watch, a round reads every transfer of USDG instead: a known cost. */
+  maxFilteredAddresses: 5_000,
+  /** Blocks read again each round: more than a payment waits, and about 2 minutes of the chain. */
+  overlapBlocks: 1_200,
+  /** Bytes of the random index of a deposit, which is its claim id at the factory. */
+  indexBytes: 6,
+  /**
+   * The least USDG that a deposit holds before the claim wallet moves it: 10 cents, since a move
+   * costs about 1.5 cents of gas (31 Oct 2026). The credit of a smaller payment comes all the same.
+   */
+  collectFromUnits: 100_000n,
 } as const;
 
 /** The prices of the coins for their quotes (credit/coin-price.ts). */
@@ -137,5 +201,16 @@ export const COIN_PRICE = {
 export const ZCASH_CHECK = {
   blockUrl: (height: number): string =>
     `https://api.blockchair.com/zcash/dashboards/block/${String(height)}`,
+  timeoutMs: 10_000,
+} as const;
+
+/**
+ * The second server that checks each payment of Monero while its wallet reads a public node: the raw
+ * block of a height at Blockchair, with the id of each transaction in `tx_hash` of `txs` (read 31 Oct
+ * 2026). It answers 404 for a height that it does not know yet. As for Zcash, whole blocks only.
+ */
+export const MONERO_CHECK = {
+  blockUrl: (height: number): string =>
+    `https://api.blockchair.com/monero/raw/block/${String(height)}`,
   timeoutMs: 10_000,
 } as const;

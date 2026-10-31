@@ -16,7 +16,6 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { HOLD } from '../config/hold.js';
 import { MESSAGES } from '../config/messages.js';
 import { PAYMENTS } from '../config/payments.js';
-import { TOKEN_PAYMENT } from '../config/token.js';
 import { factoryOfClaim, type ClaimDeposits } from '../hold/claim-deposits.js';
 import { IssuerError } from '../lib/errors.js';
 
@@ -138,6 +137,14 @@ export function claimDepositsOnChain(config: ClaimDepositsConfig): ClaimDeposits
     return receipt;
   };
 
+  // The claims and the top-ups share the nonce of the claim wallet, so its work runs one at a time.
+  let lastWork: Promise<unknown> = Promise.resolve();
+  const oneAtATime = <T>(work: () => Promise<T>): Promise<T> => {
+    const run = lastWork.then(() => claimWallet(work));
+    lastWork = run.catch(() => undefined);
+    return run;
+  };
+
   return {
     depositAddress: async (wallet, claimId) => {
       try {
@@ -148,7 +155,7 @@ export function claimDepositsOnChain(config: ClaimDepositsConfig): ClaimDeposits
       }
     },
     settle: (wallet, claimId, deposit) =>
-      claimWallet(async () => {
+      oneAtATime(async () => {
         const at = await factoryOf(wallet, claimId, deposit);
         const done = await reader.readContract({
           address: at,
@@ -173,14 +180,14 @@ export function claimDepositsOnChain(config: ClaimDepositsConfig): ClaimDeposits
         if (settled === undefined) throw new Error(MESSAGES.claimWalletNoEvent);
         return settled.args.burned;
       }),
-    refund: (wallet, claimId, deposit) =>
-      claimWallet(async () => {
+    refund: (wallet, claimId, deposit, asset) =>
+      oneAtATime(async () => {
         await confirmed(
           await writer.writeContract({
             address: await factoryOf(wallet, claimId, deposit),
             abi: FACTORY_ABI,
             functionName: 'refund',
-            args: [wallet as Address, claimId as Hex, TOKEN_PAYMENT.token.address as Address],
+            args: [wallet as Address, claimId as Hex, asset as Address],
           }),
         );
       }),

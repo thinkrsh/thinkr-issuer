@@ -68,7 +68,7 @@ export const MESSAGES = {
     left === 0
       ? 'The vouchers of this ticket were all fetched.'
       : `This ticket has ${String(left)} ${left === 1 ? 'voucher' : 'vouchers'} left to fetch.`,
-  /** Top-ups in privacy coins (config/coins.ts, 29 Oct 2026). Users never see the word note. */
+  /** Top-ups in coins (config/coins.ts, 29 Oct 2026). Users never see the word note. */
   coinNotesInvalid: `A top-up adds from $1 to $${String(MAX_TOP_UP_NOTES)} of credit.`,
   coinOff: (name: string): string => `Top-ups in ${name} are not open yet.`,
   coinPriceUnknown: (name: string): string =>
@@ -77,11 +77,11 @@ export const MESSAGES = {
     `The ${name} wallet of Thinkr does not answer right now. Try again in a minute.`,
   coinWalletUnreadable: (name: string): string =>
     `The ${name} wallet of Thinkr sent data the issuer cannot read.`,
-  coinQuoteIdInvalid: 'A top-up in a privacy coin is named by 32 hexadecimal characters.',
+  coinQuoteIdInvalid: 'A top-up in a coin is named by 32 hexadecimal characters.',
   coinQuoteUnknown: 'This top-up does not exist. Start it again.',
   /** The line of the log when the second server does not hold a payment that the wallet named. */
-  zcashCheckFailed:
-    'Zcash: a payment that the wallet named is not in its block at the second server; it waits.',
+  coinCheckFailed: (name: string): string =>
+    `${name}: a payment that the wallet named is not in its block at the second server; it waits.`,
   claimsOpen:
     'This wallet has too many claims by transfer open. Send THKR to one of them, or wait an hour.',
   transferClaimUnknown: 'This claim by transfer does not exist. Start the claim again.',

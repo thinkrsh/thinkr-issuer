@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { MESSAGES } from '../src/config/messages.js';
-import { coinWallet } from '../src/credit/coin-wallet.js';
+import { coinWallet, type CoinAddress } from '../src/credit/coin-wallet.js';
 import { IssuerError } from '../src/lib/errors.js';
 
 /** The URL of a call to fetch. */
@@ -26,6 +26,11 @@ function transfer(minor: number, overrides: Record<string, unknown> = {}): Recor
     type: 'in',
     ...overrides,
   };
+}
+
+/** The addresses of these indices, as a round of the watch names them. */
+function at(...indices: number[]): CoinAddress[] {
+  return indices.map((index) => ({ address: `address-${String(index)}`, index }));
 }
 
 function bodyOf(fetchMock: ReturnType<typeof vi.fn<typeof fetch>>, index = 0): unknown {
@@ -69,7 +74,7 @@ describe('the view-only wallets of top-ups', () => {
       ),
     );
     const wallet = coinWallet('xmr', { fetch: fetchMock, url: MONERO_URL });
-    expect(await wallet.incoming([3, 4, 5, 6])).toEqual([
+    expect(await wallet.incoming(at(3, 4, 5, 6))).toEqual([
       { txid: TXID, index: 3, amount: 8_276_000_000n, confirmations: 1, height: 3_400_000 },
       { txid: 'cd'.repeat(32), index: 5, amount: 8_276_000_000n, confirmations: 0, height: 0 },
     ]);
@@ -91,7 +96,7 @@ describe('the view-only wallets of top-ups', () => {
     expect(await wallet.newAddress('quote-id')).toEqual({ address: 'u1new', index: 2 });
     expect(urlOf(fetchMock.mock.calls[0]?.[0])).toBe(`${ZCASH_URL}/create_address`);
     expect(bodyOf(fetchMock, 0)).toEqual({ account_index: 0, label: 'quote-id' });
-    expect(await wallet.incoming([2])).toHaveLength(1);
+    expect(await wallet.incoming(at(2))).toHaveLength(1);
     expect(urlOf(fetchMock.mock.calls[1]?.[0])).toBe(`${ZCASH_URL}/get_transfers`);
     expect(bodyOf(fetchMock, 1)).toEqual({ in: true, account_index: 0, subaddr_indices: [2] });
   });
@@ -112,7 +117,7 @@ describe('the view-only wallets of top-ups', () => {
       fetch: vi.fn<typeof fetch>(() => Promise.resolve(new Response('oops', { status: 500 }))),
       url: ZCASH_URL,
     });
-    await expect(failing.incoming([1])).rejects.toThrow(MESSAGES.coinWalletUnreachable('Zcash'));
+    await expect(failing.incoming(at(1))).rejects.toThrow(MESSAGES.coinWalletUnreachable('Zcash'));
     const refusing = coinWallet('xmr', {
       fetch: vi.fn<typeof fetch>(() =>
         Promise.resolve(
@@ -130,6 +135,6 @@ describe('the view-only wallets of top-ups', () => {
       fetch: vi.fn<typeof fetch>(() => Promise.resolve(Response.json({ in: [{ txid: 'no' }] }))),
       url: ZCASH_URL,
     });
-    await expect(odd.incoming([1])).rejects.toThrow(MESSAGES.coinWalletUnreadable('Zcash'));
+    await expect(odd.incoming(at(1))).rejects.toThrow(MESSAGES.coinWalletUnreadable('Zcash'));
   });
 });

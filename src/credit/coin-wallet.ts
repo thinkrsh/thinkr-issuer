@@ -1,10 +1,17 @@
 // The view-only wallets of top-ups in privacy coins (config/coins.ts). monero-wallet-rpc answers
 // JSON-RPC 2.0 at /json_rpc; zcash-walletd answers the same methods over REST, at /<method>, with the
 // same fields. Both make a new address of their account for each top-up, and list what came in to
-// some of those addresses. Neither holds a spend key.
+// some of those addresses. Neither holds a spend key. USDG has a wallet of this shape over the chain
+// (credit/usdg-wallet.ts).
 import { z } from 'zod';
 
-import { COIN_TOP_UP, COINS, type CoinId } from '../config/coins.js';
+import {
+  COIN_TOP_UP,
+  COINS,
+  PRIVACY_COINS,
+  type CoinId,
+  type PrivacyCoinId,
+} from '../config/coins.js';
 import { MESSAGES } from '../config/messages.js';
 import { IssuerError } from '../lib/errors.js';
 
@@ -30,8 +37,18 @@ export interface IncomingTransfer {
 export interface CoinWallet {
   /** A new address of the account of top-ups, named by `label` in the wallet. */
   newAddress: (label: string) => Promise<CoinAddress>;
-  /** What came in to the addresses of these indices, with the pool where the wallet sees it. */
-  incoming: (indices: readonly number[]) => Promise<IncomingTransfer[]>;
+  /** What came in to these addresses, with the pool where the wallet sees it. */
+  incoming: (addresses: readonly CoinAddress[]) => Promise<IncomingTransfer[]>;
+  /**
+   * True for a wallet whose `incoming` reads on from where its last read stopped: each round then
+   * names every address it watches, or none, and never only some.
+   */
+  readonly readsOnward?: boolean;
+  /**
+   * Moves what these addresses hold to the wallet of Thinkr, for a coin whose addresses must be
+   * emptied. The wallets of the privacy coins need none: the spend keys of their account reach it.
+   */
+  collect?: (addresses: readonly CoinAddress[]) => Promise<void>;
 }
 
 /** The wallet of each coin that top-ups take. */
@@ -75,8 +92,8 @@ const jsonRpcSchema = z.union([
 /** Calls one method of a wallet with its parameters, and returns what it answered. */
 type WalletCall = (method: string, params: Record<string, unknown>) => Promise<unknown>;
 
-export function coinWallet(coin: CoinId, deps: CoinWalletDeps): CoinWallet {
-  const config = COINS[coin];
+export function coinWallet(coin: PrivacyCoinId, deps: CoinWalletDeps): CoinWallet {
+  const config = PRIVACY_COINS[coin];
   const call = config.walletApi === 'json-rpc' ? jsonRpcCall(coin, deps) : restCall(coin, deps);
   return {
     async newAddress(label) {
@@ -87,12 +104,12 @@ export function coinWallet(coin: CoinId, deps: CoinWalletDeps): CoinWallet {
       );
       return { address: answer.address, index: answer.address_index };
     },
-    async incoming(indices) {
-      if (indices.length === 0) return [];
+    async incoming(addresses) {
+      if (addresses.length === 0) return [];
       const params: Record<string, unknown> = {
         in: true,
         account_index: config.accountIndex,
-        subaddr_indices: [...indices],
+        subaddr_indices: addresses.map((address) => address.index),
       };
       // Only monero-wallet-rpc sees the pool; zcash-walletd reads blocks alone.
       if (config.walletApi === 'json-rpc') params.pool = true;

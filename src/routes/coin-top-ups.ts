@@ -1,4 +1,4 @@
-// Top-ups in privacy coins for the chat app (credit/coin-top-up.ts, 29 Oct 2026):
+// Top-ups in coins for the chat app (credit/coin-top-up.ts, 29 Oct 2026):
 // GET /api/issuer/top-ups/coins says which coins top-ups take now,
 // POST /api/issuer/top-ups/coin-quotes opens a quote with an address of its own on a ticket, and
 // GET /api/issuer/top-ups/coin-quotes/<id> says where it stands. The notes come as for every

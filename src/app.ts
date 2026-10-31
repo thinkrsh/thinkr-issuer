@@ -42,13 +42,13 @@ export interface AppDeps {
   readonly holderKeys: HolderKeys;
   /** Sign the passes of the free chats of a holder, one key for each month (31 Oct 2026). */
   readonly passKeys: HolderKeys;
-  /** Sign the notes of change of a top-up in a privacy coin; none while no coin is open. */
+  /** Sign the notes of change of a top-up in a coin; none while no coin is open. */
   readonly changeKeys: ChangeKeys;
   /** The factory of the deposit addresses of claims by transfer, and its claim wallet. */
   readonly claimDeposits: ClaimDeposits;
   /** Payment in THKR; unset, TOKEN_PAYMENT of config/token.ts. Tests name a wallet of their own. */
   readonly tokenPayment?: TokenPaymentConfig;
-  /** The view-only wallet of each privacy coin that top-ups take (config/coins.ts). */
+  /** The wallet of each coin that top-ups take (config/coins.ts). */
   readonly coinWallets: CoinWallets;
 }
 

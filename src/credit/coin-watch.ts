@@ -1,22 +1,27 @@
-// The watch of top-ups in privacy coins (credit/coin-top-up.ts). Every few seconds the issuer asks
-// the wallet of each coin what came in to the addresses of the quotes that are open or ended lately,
-// and every few minutes to the addresses of every quote it still watches. It notes each payment it
-// sees; once a payment has its blocks, and the second server holds it where the coin needs one, the
-// payment counts, and the credit it buys joins the ticket of its quote. The log names no address,
-// payment, or ticket.
+// The watch of top-ups in coins (credit/coin-top-up.ts). Every few seconds the issuer asks the wallet
+// of each coin what came in to the addresses of the quotes that are open or ended lately, and every
+// few minutes to the addresses of every quote it still watches. It notes each payment it sees; once a
+// payment has its blocks, and the second server holds it where the coin needs one, the payment counts,
+// and the credit it buys joins the ticket of its quote. Every few minutes, apart from those rounds so
+// that a slow transaction holds up no credit, a wallet whose addresses must be emptied moves what the
+// counted payments left there. The log names no address, payment, or ticket.
 import { COIN_IDS, COIN_TOP_UP, COINS, type CoinId } from '../config/coins.js';
 import { MESSAGES } from '../config/messages.js';
 import type { LogLine } from '../lib/log.js';
 import { coinQuoteUnitsPerUsd } from './coin-price.js';
 import { centsFor, unitsPerUsdFor, usdMicrosOf } from './coin-top-up.js';
-import type { CoinWallets, IncomingTransfer } from './coin-wallet.js';
+import type { CoinAddress, CoinWallets, IncomingTransfer } from './coin-wallet.js';
 import type { CoinQuote, CoinTransferWorth, Ledger } from './ledger.js';
+import { moneroBlockHolds } from './monero-check.js';
 import { zcashBlockHolds } from './zcash-check.js';
 
 /** Whether the second server of a coin holds a payment at a height (config/coins.ts, crossCheck). */
 type SecondServer = (fetcher: typeof fetch, height: number, txid: string) => Promise<boolean>;
 
-const SECOND_SERVERS: Readonly<Partial<Record<CoinId, SecondServer>>> = { zec: zcashBlockHolds };
+const SECOND_SERVERS: Readonly<Partial<Record<CoinId, SecondServer>>> = {
+  xmr: moneroBlockHolds,
+  zec: zcashBlockHolds,
+};
 
 export interface CoinWatchDeps {
   readonly ledger: Pick<
@@ -48,20 +53,38 @@ export async function watchCoin(
   const wallet = deps.coinWallets[coin];
   if (wallet === undefined) return 0;
   const now = deps.now();
-  const endedAfter = now - (all ? COIN_TOP_UP.watchMs : COIN_TOP_UP.inTimeGraceMs);
+  const onward = wallet.readsOnward === true;
+  const endedAfter = now - (all || onward ? COIN_TOP_UP.watchMs : COIN_TOP_UP.inTimeGraceMs);
   const quotes = deps.ledger.watchedCoinQuotes(coin, endedAfter);
-  if (quotes.length === 0) return 0;
-  const incoming = await wallet.incoming(quotes.map((quote) => quote.addressIndex));
+  // A wallet that reads on still moves its place along while nothing waits.
+  if (quotes.length === 0 && !onward) return 0;
+  const incoming = await wallet.incoming(quotes.map(addressOf));
   const unitsPerUsdNow = coinQuoteUnitsPerUsd(deps.ledger, coin, now);
   let added = 0;
   for (const quote of quotes) {
     const paid = incoming.filter((transfer) => transfer.index === quote.addressIndex);
+    if (paid.length === 0) continue;
     for (const transfer of paid) {
       deps.ledger.seeCoinTransfer(quote.id, transfer.txid, transfer.amount, now);
     }
     added += await settle(deps, quote, paid, unitsPerUsdNow, memory);
   }
   return added;
+}
+
+/**
+ * Moves on what the payments that counted left at their addresses, for a coin whose addresses must
+ * be emptied. A quote with no credit stays as it is, so that dust costs no gas.
+ */
+export async function collectCoin(deps: CoinWatchDeps, coin: CoinId): Promise<void> {
+  const collect = deps.coinWallets[coin]?.collect;
+  if (collect === undefined) return;
+  const quotes = deps.ledger.watchedCoinQuotes(coin, deps.now() - COIN_TOP_UP.watchMs);
+  await collect(quotes.filter((quote) => quote.credited > 0).map(addressOf));
+}
+
+function addressOf(quote: CoinQuote): CoinAddress {
+  return { address: quote.address, index: quote.addressIndex };
 }
 
 /**
@@ -118,7 +141,7 @@ async function heldBySecondServer(
   }
   if (!held && !memory.doubted.has(transfer.txid)) {
     memory.doubted.add(transfer.txid);
-    deps.log(MESSAGES.zcashCheckFailed);
+    deps.log(MESSAGES.coinCheckFailed(COINS[coin].name));
   }
   return held;
 }
@@ -149,11 +172,34 @@ export function startCoinWatch(deps: CoinWatchDeps): () => void {
       }
     }
   };
+  const collecting = new Set<CoinId>();
+  const failingToCollect = new Set<CoinId>();
+  const collect = (coin: CoinId): void => {
+    if (collecting.has(coin)) return;
+    collecting.add(coin);
+    const name = COINS[coin].name;
+    collectCoin(deps, coin)
+      .then(
+        () => {
+          if (failingToCollect.delete(coin)) deps.log(`${name} top-ups: moving again.`);
+        },
+        (error: unknown) => {
+          if (!failingToCollect.has(coin)) {
+            deps.log(`${name} top-ups: ${error instanceof Error ? error.message : String(error)}`);
+          }
+          failingToCollect.add(coin);
+        },
+      )
+      .finally(() => {
+        collecting.delete(coin);
+      });
+  };
   const tick = (): void => {
     if (running) return;
     running = true;
     const all = round % COIN_TOP_UP.sweepEvery === 0;
     round += 1;
+    if (all) coins.forEach(collect);
     void runRound(all).finally(() => {
       running = false;
     });

@@ -4,8 +4,8 @@
 // balances live in the proxy. A ticket counts the vouchers that its payments bought and that the
 // chat app fetched. For payment in THKR it also keeps the quotes, the price of THKR over the last
 // hours, and the amount and time of each payment, which the chain shows to anyone anyway. For top-ups
-// in privacy coins it keeps each quote with its address and ticket, the payments to that address,
-// and the prices of the coins. The Node entry keeps it in SQLite (node/ledger.ts).
+// in coins it keeps each quote with its address and ticket, the payments to that address, and the
+// prices of the coins. The Node entry keeps it in SQLite (node/ledger.ts).
 import type { CoinId } from '../config/coins.js';
 
 /** 'same': the payment paid for this request before; 'other': it paid for another one. */
@@ -79,10 +79,10 @@ export interface PriceSample {
 }
 
 /**
- * A top-up in a privacy coin (config/coins.ts, 29 Oct 2026): an address of its own in the view-only
- * wallet of the coin, and the notes of a ticket that its payments buy. Its payments never join the
- * list of payments above, which anyone may read: unlike a payment on Robinhood Chain, no chain shows
- * them to anyone.
+ * A top-up in a coin (config/coins.ts, 29 Oct 2026): an address of its own from the wallet of the
+ * coin, and the notes of a ticket that its payments buy. Its payments never join the list of payments
+ * above, which anyone may read: no chain shows a payment in a privacy coin to anyone, and a payment
+ * in USDG to its deposit names no ticket on the chain.
  */
 export interface CoinQuote {
   /** Random, in hex: only the chat app that opened the quote knows it. */
@@ -188,6 +188,10 @@ export interface Ledger {
    * change. Returns the cents that joined.
    */
   settleCoinQuote: (quoteId: string, worths: readonly CoinTransferWorth[], cents: number) => number;
+  /** The newest block that the wallet of a coin read to, for a wallet that reads on, or null. */
+  coinCursor: (coin: CoinId) => number | null;
+  /** Notes the newest block that the wallet of a coin read to. */
+  setCoinCursor: (coin: CoinId, block: number) => void;
   /** Keeps a reading of the price of a coin, and drops its readings before `dropBefore`. */
   addCoinPrice: (coin: CoinId, sample: PriceSample, dropBefore: number) => void;
   /** The readings of the price of a coin since `since`, the oldest first. */

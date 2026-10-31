@@ -4,7 +4,13 @@
 // of the last half hour (credit/price-window.ts), as a quote in THKR does over an hour.
 import { z } from 'zod';
 
-import { COIN_PRICE, COINS, type CoinId } from '../config/coins.js';
+import {
+  COIN_PRICE,
+  COINS,
+  PRIVACY_COINS,
+  type CoinId,
+  type PrivacyCoinId,
+} from '../config/coins.js';
 import type { LogLine } from '../lib/log.js';
 import type { Ledger } from './ledger.js';
 import { windowedUnitsPerUsd } from './price-window.js';
@@ -19,13 +25,13 @@ export interface CoinPriceDeps {
 }
 
 /** The last price of each coin at one source, as decimal text in dollars. */
-type SourcePrices = Partial<Record<CoinId, string>>;
+type SourcePrices = Partial<Record<PrivacyCoinId, string>>;
 
 interface PriceSource {
   readonly name: string;
   readonly read: (
     deps: Pick<CoinPriceDeps, 'fetch'>,
-    coins: readonly CoinId[],
+    coins: readonly PrivacyCoinId[],
   ) => Promise<SourcePrices>;
 }
 
@@ -41,7 +47,7 @@ const SOURCES: readonly PriceSource[] = [
   {
     name: 'Kraken',
     async read(deps, coins) {
-      const pairs = coins.map((coin) => COINS[coin].krakenPair).join(',');
+      const pairs = coins.map((coin) => PRIVACY_COINS[coin].krakenPair).join(',');
       const answer = krakenSchema.parse(
         await getJson(
           deps,
@@ -50,7 +56,7 @@ const SOURCES: readonly PriceSource[] = [
       );
       const prices: SourcePrices = {};
       for (const coin of coins) {
-        const last = answer.result[COINS[coin].krakenKey]?.c[0];
+        const last = answer.result[PRIVACY_COINS[coin].krakenKey]?.c[0];
         if (last !== undefined) prices[coin] = last;
       }
       return prices;
@@ -59,7 +65,7 @@ const SOURCES: readonly PriceSource[] = [
   {
     name: 'Bitfinex',
     async read(deps, coins) {
-      const symbols = coins.map((coin) => COINS[coin].bitfinexSymbol).join(',');
+      const symbols = coins.map((coin) => PRIVACY_COINS[coin].bitfinexSymbol).join(',');
       const answer = bitfinexSchema.parse(
         await getJson(
           deps,
@@ -68,7 +74,7 @@ const SOURCES: readonly PriceSource[] = [
       );
       const prices: SourcePrices = {};
       for (const coin of coins) {
-        const ticker = answer.find((row) => row[0] === COINS[coin].bitfinexSymbol);
+        const ticker = answer.find((row) => row[0] === PRIVACY_COINS[coin].bitfinexSymbol);
         const last = ticker?.[COIN_PRICE.bitfinexLastIndex];
         if (typeof last === 'number') prices[coin] = String(last);
       }
@@ -105,9 +111,9 @@ export function unitsPerUsdAt(price: string, decimals: number): bigint | null {
  */
 export async function readCoinPrices(
   deps: Pick<CoinPriceDeps, 'fetch'>,
-  coins: readonly CoinId[],
-): Promise<{ readonly units: Partial<Record<CoinId, bigint>>; readonly failed: string[] }> {
-  const units: Partial<Record<CoinId, bigint>> = {};
+  coins: readonly PrivacyCoinId[],
+): Promise<{ readonly units: Partial<Record<PrivacyCoinId, bigint>>; readonly failed: string[] }> {
+  const units: Partial<Record<PrivacyCoinId, bigint>> = {};
   const failed: string[] = [];
   const answers = await Promise.allSettled(SOURCES.map((source) => source.read(deps, coins)));
   answers.forEach((answer, index) => {
@@ -132,13 +138,15 @@ export function coinQuoteUnitsPerUsd(
   coin: CoinId,
   now: number,
 ): bigint | null {
+  const fixed = COINS[coin].fixedUnitsPerUsd;
+  if (fixed !== null) return fixed;
   return windowedUnitsPerUsd(ledger.coinPrices(coin, now - COIN_PRICE.windowMs), now, COIN_PRICE);
 }
 
 /** Reads the prices once and keeps them; returns the sources that failed. */
 export async function sampleCoinPrices(
   deps: CoinPriceDeps,
-  coins: readonly CoinId[],
+  coins: readonly PrivacyCoinId[],
 ): Promise<string[]> {
   const { units, failed } = await readCoinPrices(deps, coins);
   const at = deps.now();
@@ -156,7 +164,10 @@ export async function sampleCoinPrices(
  * when it answers again, so that a source down for an hour leaves two lines, not sixty. Returns the
  * function that stops it.
  */
-export function startCoinPriceSampler(deps: CoinPriceDeps, coins: readonly CoinId[]): () => void {
+export function startCoinPriceSampler(
+  deps: CoinPriceDeps,
+  coins: readonly PrivacyCoinId[],
+): () => void {
   const failing = new Set<string>();
   const report = (failed: readonly string[]): void => {
     for (const name of failed) {

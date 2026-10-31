@@ -151,7 +151,12 @@ async function refundDeposits(deps: SettleDeps): Promise<void> {
     if (mayStillSettle) continue;
     const transfers = deps.store.transfersOf(claim.deposit);
     if (balanceOf(transfers, claim.deposit) >= MIN_REFUND) {
-      await deps.claimDeposits.refund(claim.wallet, claim.claimId, claim.deposit);
+      await deps.claimDeposits.refund(
+        claim.wallet,
+        claim.claimId,
+        claim.deposit,
+        TOKEN_PAYMENT.token.address,
+      );
     }
     deps.store.markReleased(claim.ticketHash, lastInflowAt(transfers, claim.deposit));
   }

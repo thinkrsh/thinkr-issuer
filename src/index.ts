@@ -7,7 +7,7 @@ import { getConnInfo } from '@hono/node-server/conninfo';
 import type { Context } from 'hono';
 
 import { createApp } from './app.js';
-import { COIN_IDS, type CoinId } from './config/coins.js';
+import { PRIVACY_COIN_IDS, type CoinId } from './config/coins.js';
 import { readEnv } from './config/env.js';
 import { MESSAGES } from './config/messages.js';
 import { SERVER } from './config/server.js';
@@ -15,6 +15,7 @@ import { startCoinPriceSampler } from './credit/coin-price.js';
 import { coinWallet, type CoinWallet } from './credit/coin-wallet.js';
 import { startCoinWatch } from './credit/coin-watch.js';
 import { startTokenPriceSampler } from './credit/token-price.js';
+import { usdgWallet } from './credit/usdg-wallet.js';
 import { startHoldSync } from './hold/sync.js';
 import { IssuerError } from './lib/errors.js';
 import { writeLogLine } from './lib/log.js';
@@ -38,13 +39,22 @@ const claimDeposits = claimDepositsOnChain({
   retiredFactory: env.claimFactoryRetired,
   operatorKey: operatorKeyFrom(readFileSync(env.claimOperatorKeyFile, 'utf8')),
 });
-/** The coins that top-ups take, each with its view-only wallet; none while COIN_TOP_UPS is unset. */
+/** The coins that top-ups take, each with its wallet; none while COIN_TOP_UPS is unset. */
 const coinWallets: Partial<Record<CoinId, CoinWallet>> = {};
-for (const coin of COIN_IDS) {
+for (const coin of PRIVACY_COIN_IDS) {
   const url = env.coinWallets[coin];
   if (url !== undefined) coinWallets[coin] = coinWallet(coin, { fetch: globalThis.fetch, url });
 }
-const coins = COIN_IDS.filter((coin) => coinWallets[coin] !== undefined);
+if (env.usdgTopUps) {
+  coinWallets.usdg = usdgWallet({
+    fetch: globalThis.fetch,
+    rpcUrl: env.chainRpcUrl,
+    ledger,
+    claimDeposits,
+  });
+}
+/** The coins whose price moves, which the sampler reads each minute. */
+const pricedCoins = PRIVACY_COIN_IDS.filter((coin) => coinWallets[coin] !== undefined);
 
 /** A secret of this process: the keys of visitors cannot be traced back to their addresses. */
 const VISITOR_KEY_SECRET = randomBytes(SERVER.visitorKeySecretBytes);
@@ -110,13 +120,13 @@ const stopHold = startHoldSync({
   log: writeLogLine,
 });
 
-// Top-ups in privacy coins: their prices each minute, and the watch of their addresses.
+// Top-ups in coins: the prices that move, each minute, and the watch of their addresses.
 const stopCoinPrices =
-  coins.length === 0
+  pricedCoins.length === 0
     ? () => undefined
     : startCoinPriceSampler(
         { fetch: globalThis.fetch, ledger, now: () => Date.now(), log: writeLogLine },
-        coins,
+        pricedCoins,
       );
 const stopCoinWatch = startCoinWatch({
   ledger,

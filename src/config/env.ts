@@ -1,13 +1,13 @@
 // Reads the environment once at startup and stops with a clear error when a variable is missing.
 import { z } from 'zod';
 
-import { COIN_IDS, type CoinId } from './coins.js';
+import { COIN_IDS, PRIVACY_COIN_IDS, type CoinId, type PrivacyCoinId } from './coins.js';
 
-/** The variable that names the URL of the wallet of each coin of top-ups. */
+/** The variable that names the URL of the view-only wallet of each privacy coin of top-ups. */
 const COIN_WALLET_VARIABLES = {
   xmr: 'MONERO_WALLET_RPC_URL',
   zec: 'ZCASH_WALLETD_URL',
-} as const satisfies Record<CoinId, string>;
+} as const satisfies Record<PrivacyCoinId, string>;
 
 const coinListPattern = new RegExp(`^(${COIN_IDS.join('|')})(\\s*,\\s*(${COIN_IDS.join('|')}))*$`);
 
@@ -73,8 +73,9 @@ const envObject = z.object({
    */
   CLAIM_OPERATOR_KEY_FILE: z.string().trim().min(1),
   /**
-   * The privacy coins that top-ups take (config/coins.ts), comma-separated: xmr, zec. Each needs
-   * the URL of its wallet below. Unset, top-ups take none, and the issuer calls no wallet.
+   * The coins that top-ups take (config/coins.ts), comma-separated: xmr, zec, usdg. A privacy coin
+   * needs the URL of its wallet below; USDG needs only CLAIM_FACTORY and its claim wallet, from which
+   * it takes its deposits. Unset, top-ups take none, and the issuer calls no wallet.
    */
   COIN_TOP_UPS: z.string().trim().regex(coinListPattern).optional(),
   /** monero-wallet-rpc with the view-only wallet of top-ups, on the loopback of the server. */
@@ -86,8 +87,8 @@ const envObject = z.object({
 /** A coin of top-ups with no URL of its wallet, or with no keys of change, stops the issuer at startup. */
 const envSchema = envObject.superRefine((data, ctx) => {
   for (const coin of coinsOf(data.COIN_TOP_UPS)) {
-    const variable = COIN_WALLET_VARIABLES[coin];
-    if (data[variable] === undefined) {
+    const variable = isPrivacyCoin(coin) ? COIN_WALLET_VARIABLES[coin] : null;
+    if (variable !== null && data[variable] === undefined) {
       ctx.addIssue({ code: 'custom', path: [variable], message: `${coin} needs its wallet.` });
     }
     if (data.CHANGE_KEYS_DIR === undefined) {
@@ -113,8 +114,10 @@ export interface Env {
   /** In lower case; null when no factory came before it. */
   readonly claimFactoryRetired: string | null;
   readonly claimOperatorKeyFile: string;
-  /** The URL of the wallet of each coin that top-ups take; empty while they take none. */
-  readonly coinWallets: Readonly<Partial<Record<CoinId, string>>>;
+  /** The URL of the wallet of each privacy coin that top-ups take; empty while they take none. */
+  readonly coinWallets: Readonly<Partial<Record<PrivacyCoinId, string>>>;
+  /** Whether top-ups take USDG in the chat app, with a deposit of its own for each. */
+  readonly usdgTopUps: boolean;
 }
 
 export type EnvSource = Readonly<Record<string, string | undefined>>;
@@ -146,17 +149,22 @@ export function readEnv(source: EnvSource): Env {
     claimFactoryRetired: result.data.CLAIM_FACTORY_RETIRED?.toLowerCase() ?? null,
     claimOperatorKeyFile: result.data.CLAIM_OPERATOR_KEY_FILE,
     coinWallets: coinWalletsOf(result.data),
+    usdgTopUps: coinsOf(result.data.COIN_TOP_UPS).includes('usdg'),
   };
 }
 
-/** The URL of the wallet of each coin that top-ups take, as the schema checked them. */
-function coinWalletsOf(data: z.infer<typeof envObject>): Partial<Record<CoinId, string>> {
-  const wallets: Partial<Record<CoinId, string>> = {};
-  for (const coin of coinsOf(data.COIN_TOP_UPS)) {
+/** The URL of the wallet of each privacy coin that top-ups take, as the schema checked them. */
+function coinWalletsOf(data: z.infer<typeof envObject>): Partial<Record<PrivacyCoinId, string>> {
+  const wallets: Partial<Record<PrivacyCoinId, string>> = {};
+  for (const coin of coinsOf(data.COIN_TOP_UPS).filter(isPrivacyCoin)) {
     const url = data[COIN_WALLET_VARIABLES[coin]];
     if (url !== undefined) wallets[coin] = url;
   }
   return wallets;
+}
+
+function isPrivacyCoin(coin: CoinId): coin is PrivacyCoinId {
+  return PRIVACY_COIN_IDS.some((id) => id === coin);
 }
 
 /** The coins of a list such as "xmr, zec", each once, in the order of COIN_IDS. */

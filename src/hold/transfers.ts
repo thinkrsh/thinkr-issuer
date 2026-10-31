@@ -14,9 +14,9 @@ const MS_PER_SECOND = 1_000;
 /** The code of a wallet of EIP-7702: an account that delegates to a contract, and signs as one. */
 const DELEGATION_PREFIX = '0xef0100';
 
-const hexSchema = z.string().regex(/^0x[0-9a-fA-F]*$/);
+export const hexSchema = z.string().regex(/^0x[0-9a-fA-F]*$/);
 
-const logsSchema = z.array(
+export const logsSchema = z.array(
   z.object({
     blockNumber: hexSchema,
     logIndex: hexSchema,
@@ -40,8 +40,12 @@ export interface TransferWindow {
 
 /** The newest block that the count reads: a few blocks behind the newest one. */
 export async function countedHead(deps: ChainDeps): Promise<number> {
-  const newest = Number(hexSchema.parse(await rpc(deps, 'eth_blockNumber', [])));
-  return newest - HOLD.confirmations;
+  return (await newestBlock(deps)) - HOLD.confirmations;
+}
+
+/** The newest block of the chain. */
+export async function newestBlock(deps: ChainDeps): Promise<number> {
+  return Number(hexSchema.parse(await rpc(deps, 'eth_blockNumber', [])));
 }
 
 /** Every transfer of THKR from block `from` to block `to`, in the order of the chain. */

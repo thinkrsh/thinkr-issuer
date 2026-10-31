@@ -26,7 +26,21 @@ describe('readEnv', () => {
       claimFactoryRetired: null,
       claimOperatorKeyFile: '../../secret/claim-operator-key.txt',
       coinWallets: {},
+      usdgTopUps: false,
     });
+  });
+
+  it('takes USDG with no wallet of its own, but with the keys of change', () => {
+    const usdg = {
+      ...LAPTOP,
+      COIN_TOP_UPS: 'zec, usdg',
+      CHANGE_KEYS_DIR: '/etc/thinkr-issuer/change-keys',
+      ZCASH_WALLETD_URL: 'http://127.0.0.1:8000',
+    };
+    expect(readEnv(usdg).usdgTopUps).toBe(true);
+    expect(readEnv(usdg).coinWallets).toEqual({ zec: 'http://127.0.0.1:8000' });
+    expect(readEnv({ ...usdg, COIN_TOP_UPS: 'usdg' }).coinWallets).toEqual({});
+    expect(() => readEnv({ ...LAPTOP, COIN_TOP_UPS: 'usdg' })).toThrow(/CHANGE_KEYS_DIR/);
   });
 
   it('reads the coins of top-ups, each with the URL of its wallet', () => {

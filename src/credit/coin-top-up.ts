@@ -1,6 +1,6 @@
-// A top-up in a privacy coin (config/coins.ts, 29 Oct 2026). The chat app names its ticket, the
-// coin, and the notes; the issuer takes a new address from the view-only wallet of the coin, prices
-// the notes in the coin, and keeps the quote. Once a payment to that address has its blocks, it
+// A top-up in a coin (config/coins.ts, 29 Oct 2026). The chat app names its ticket, the coin, and
+// the notes; the issuer takes a new address from the wallet of the coin, prices the notes in the
+// coin, and keeps the quote. Once a payment to that address has its blocks, it
 // counts at the price of its quote, or at the price of then when it came after the quote ended, and
 // the credit that the payments are worth joins the ticket, which the chat app fetches as for any
 // top-up. The amount of a quote is a guide: whatever comes in becomes credit, to the cent (the owner,
@@ -42,6 +42,7 @@ export function coinTopUps(wallets: CoinWallets): CoinTopUpsResponse {
       coin,
       name: config.name,
       symbol: config.symbol,
+      network: config.network,
       decimals: config.decimals,
       confirmations: config.confirmations,
     });
@@ -95,13 +96,14 @@ export function coinText(amount: bigint, decimals: number): string {
   return fraction === '' ? whole : `${whole}.${fraction}`;
 }
 
-/** The payment link that wallets open for `amount` to `address`. */
+/** The payment link that wallets open for `amount` to `address`, or the plain address. */
 export function coinUri(coin: CoinId, address: string, amount: bigint): string {
   const config = COINS[coin];
+  if (config.uri === null) return address;
   const query = new URLSearchParams({
-    [config.uriAmountField]: coinText(amount, config.decimals),
+    [config.uri.amountField]: coinText(amount, config.decimals),
   });
-  return `${config.uriScheme}:${address}?${query.toString()}`;
+  return `${config.uri.scheme}:${address}?${query.toString()}`;
 }
 
 /**
@@ -132,6 +134,7 @@ export function coinQuoteResponse(
     coin: quote.coin,
     name: config.name,
     symbol: config.symbol,
+    network: config.network,
     decimals: config.decimals,
     address: quote.address,
     amount: quote.amount.toString(),

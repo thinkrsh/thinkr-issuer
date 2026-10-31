@@ -228,7 +228,7 @@ export interface TopUpTicketResponse {
   /** The RSA public key, SPKI DER in base64url. */
   publicKey: string;
   voucherUsd: number;
-  /** The notes of change of the ticket, by their key: a top-up in a privacy coin brings them. */
+  /** The notes of change of the ticket, by their key: a top-up in a coin brings them. */
   change: TicketChangeNotes[];
 }
 
@@ -254,11 +254,13 @@ export const ticketRedeemRequestSchema = z.strictObject({
 
 export type TicketRedeemRequest = z.infer<typeof ticketRedeemRequestSchema>;
 
-/** One privacy coin that top-ups take (29 Oct 2026), as the chat app shows it. */
+/** One coin that top-ups take (29 Oct 2026), as the chat app shows it. */
 export interface CoinInfo {
   coin: CoinId;
   name: string;
   symbol: string;
+  /** The network that carries the coin. */
+  network: string;
   /** Decimals of the smallest unit of the coin, in which amounts are written. */
   decimals: number;
   /** Blocks that must hold a payment before its notes come. */
@@ -266,8 +268,8 @@ export interface CoinInfo {
 }
 
 /**
- * GET /api/issuer/top-ups/coins: the privacy coins that top-ups take now, none while the server runs
- * no wallet, and the bounds of one top-up. New fields say notes (decision 275); the older routes keep
+ * GET /api/issuer/top-ups/coins: the coins that top-ups take now, none while the server runs no
+ * wallet, and the bounds of one top-up. New fields say notes (decision 275); the older routes keep
  * their names. Mirror: coinTopUpsSchema in apps/app/src/services/contract.ts.
  */
 export interface CoinTopUpsResponse {
@@ -280,7 +282,7 @@ export interface CoinTopUpsResponse {
 
 /**
  * POST /api/issuer/top-ups/coin-quotes: an address of its own for a top-up of `notes` on a ticket of
- * the chat app, paid in a privacy coin. As for the other top-ups of a ticket, the issuer never sees
+ * the chat app, paid in a coin. As for the other top-ups of a ticket, the issuer never sees
  * a blinded note: the chat app fetches them once the payment came.
  */
 export const coinQuoteRequestSchema = z.strictObject({
@@ -296,13 +298,13 @@ export const coinQuoteRequestSchema = z.strictObject({
 export type CoinQuoteRequest = z.infer<typeof coinQuoteRequestSchema>;
 
 /**
- * Where a quote in a privacy coin stands: no payment yet, a payment seen that waits for its blocks,
+ * Where a quote in a coin stands: no payment yet, a payment seen that waits for its blocks,
  * notes added to the ticket, or its time ended with nothing paid.
  */
 export type CoinQuoteState = 'waiting' | 'seen' | 'credited' | 'expired';
 
 /**
- * A quote in a privacy coin: what to send, to where, and by when, and where it stands. Answer of
+ * A quote in a coin: what to send, to where, and by when, and where it stands. Answer of
  * POST /api/issuer/top-ups/coin-quotes and of GET /api/issuer/top-ups/coin-quotes/<id>.
  * Mirror: coinQuoteSchema in apps/app/src/services/contract.ts.
  */
@@ -312,12 +314,17 @@ export interface CoinQuoteResponse {
   coin: CoinId;
   name: string;
   symbol: string;
+  /** The network that carries the coin. */
+  network: string;
   decimals: number;
   /** The address of this quote alone. */
   address: string;
   /** What to send, in the smallest unit of the coin. */
   amount: string;
-  /** The payment link that wallets open, with the amount in whole coins. */
+  /**
+   * What the QR code holds: the payment link that wallets open, with the amount in whole coins, or
+   * the plain address for a coin with no link that wallets read alike.
+   */
   uri: string;
   /** The notes that the amount buys, and their worth: what the form asked for, as a guide. */
   notes: number;

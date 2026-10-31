@@ -106,6 +106,10 @@ const SCHEMA = `
     units_per_usd TEXT NOT NULL,
     PRIMARY KEY (coin, at)
   ) STRICT;
+  CREATE TABLE IF NOT EXISTS coin_cursors (
+    coin TEXT PRIMARY KEY,
+    block INTEGER NOT NULL
+  ) STRICT;
 `;
 
 /**
@@ -214,6 +218,11 @@ export function openLedger(file: string): Ledger {
   const dropCoinPrices = db.prepare('DELETE FROM coin_prices WHERE coin = ? AND at < ?');
   const selectCoinPrices = db.prepare(
     'SELECT at, units_per_usd FROM coin_prices WHERE coin = ? AND at >= ? ORDER BY at',
+  );
+  const selectCoinCursor = db.prepare('SELECT block FROM coin_cursors WHERE coin = ?');
+  const upsertCoinCursor = db.prepare(
+    'INSERT INTO coin_cursors (coin, block) VALUES (?, ?) ' +
+      'ON CONFLICT (coin) DO UPDATE SET block = excluded.block',
   );
 
   const transaction = <T>(work: () => T, keep: (result: T) => boolean): T => {
@@ -413,6 +422,13 @@ export function openLedger(file: string): Ledger {
         },
         () => true,
       );
+    },
+    coinCursor(coin): number | null {
+      const row = selectCoinCursor.get(coin);
+      return row === undefined ? null : integer(row.block);
+    },
+    setCoinCursor(coin, block) {
+      upsertCoinCursor.run(coin, block);
     },
     addCoinPrice(coin, sample, dropBefore) {
       transaction(

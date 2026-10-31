@@ -2,7 +2,9 @@
 // the deposit address of each claim by transfer, and the claim wallet, its operator, settles a
 // deposit whose claim went through, burning at most the burn of one claim and sending the rest back
 // to the wallet, or refunds all of a deposit to its wallet. The contract allows nothing else, so
-// THKR sent to a deposit is never Thinkr's. node/claim-deposits.ts reaches the chain.
+// THKR sent to a deposit is never Thinkr's. Top-ups in USDG use it too (credit/usdg-wallet.ts), with
+// the wallet that receives top-ups as the wallet of each deposit. node/claim-deposits.ts reaches the
+// chain.
 
 export interface ClaimDeposits {
   /** The deposit address that the factory names for the claim `claimId` of `wallet`, in lower case. */
@@ -13,8 +15,8 @@ export interface ClaimDeposits {
    * `deposit` is the address that the claim named, which says the factory of a claim from before.
    */
   settle: (wallet: string, claimId: string, deposit: string) => Promise<bigint | null>;
-  /** Sends all the THKR of the deposit of a claim back to its wallet. */
-  refund: (wallet: string, claimId: string, deposit: string) => Promise<void>;
+  /** Sends all of the token `asset` in the deposit of a claim to its wallet. */
+  refund: (wallet: string, claimId: string, deposit: string, asset: string) => Promise<void>;
 }
 
 /**

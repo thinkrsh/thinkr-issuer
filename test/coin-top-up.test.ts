@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { COIN_PRICE, COIN_TOP_UP, COINS, ZCASH_CHECK, type CoinId } from '../src/config/coins.js';
+import {
+  COIN_PRICE,
+  COIN_TOP_UP,
+  COINS,
+  MONERO_CHECK,
+  ZCASH_CHECK,
+  type CoinId,
+} from '../src/config/coins.js';
 import { CREDIT, MAX_TOP_UP_NOTES } from '../src/config/credit.js';
 import { MESSAGES } from '../src/config/messages.js';
 import type {
@@ -72,9 +79,13 @@ function fakeWallet(prefix: string): FakeWallet {
         index: fake.labels.length,
       });
     },
-    incoming: (indices) => {
+    incoming: (addresses) => {
       if (fake.down) return Promise.reject(new IssuerError('upstream_error', 'down'));
-      return Promise.resolve(fake.transfers.filter((transfer) => indices.includes(transfer.index)));
+      return Promise.resolve(
+        fake.transfers.filter((transfer) =>
+          addresses.some((address) => address.index === transfer.index),
+        ),
+      );
     },
   };
   return fake;
@@ -106,7 +117,14 @@ function coinTest(wallets: readonly CoinId[] = ['xmr', 'zec']): CoinTest {
     ...(wallets.includes('xmr') ? { xmr } : {}),
     ...(wallets.includes('zec') ? { zec } : {}),
   };
-  const fetchMock = vi.fn<typeof fetch>();
+  // The second server of Monero holds the payments of a test, unless the test says otherwise.
+  const fetchMock = vi.fn<typeof fetch>(() =>
+    Promise.resolve(
+      Response.json({
+        data: { '3534900': { block: { txs: [{ tx_hash: TXID }, { tx_hash: OTHER_TXID }] } } },
+      }),
+    ),
+  );
   const testApp = createTestApp(fetchMock, { now: () => clock.now, coinWallets, ledger });
   // One memory across rounds, as the watch of the server keeps it.
   const memory: WatchMemory = { doubted: new Set() };
@@ -199,6 +217,7 @@ describe('the amounts of a top-up in a privacy coin', () => {
     expect(coinText(100_000_000n, 8)).toBe('1');
     expect(coinUri('xmr', '8abc', 8_276_000_000n)).toBe('monero:8abc?tx_amount=0.008276');
     expect(coinUri('zec', 'u1abc', 371_000n)).toBe('zcash:u1abc?amount=0.00371');
+    expect(coinUri('usdg', '0xabc', 20_000_000n)).toBe('0xabc');
   });
 
   it('buys credit to the nearest cent, with no cap', () => {
@@ -443,12 +462,13 @@ describe('top-ups in privacy coins (29 Oct 2026)', () => {
     expect(again.status).toBe(200);
     const status = await ticketOf(testApp.app, ticket.hash);
     expect(status.change).toMatchObject([{ paid: 0 }, { paid: 3, redeemed: 3 }]);
-    // The same blinded notes under the key of a dollar get nothing: this ticket bought no dollar.
+    // The same blinded notes under the key of a dollar get nothing: this ticket bought no dollar. A
+    // blinded note above the modulus of that key, which these random keys allow, fails before that.
     const dearer = await send(testApp.app, 'top-ups/tickets/redeem', {
       ...body,
       keyId: TEST_NOTE_KEY.keyId,
     });
-    expect(dearer.status).toBe(404);
+    expect([400, 404]).toContain(dearer.status);
     // No more than the ticket bought.
     const tooMany = await send(testApp.app, 'top-ups/tickets/redeem', {
       ticket: ticket.secret,
@@ -506,13 +526,47 @@ describe('top-ups in privacy coins (29 Oct 2026)', () => {
     fetchMock.mockImplementation(() => block([OTHER_TXID]));
     expect(await watch('zec')).toBe(0);
     expect(await watch('zec')).toBe(0);
-    expect(testApp.logs.filter((line) => line === MESSAGES.zcashCheckFailed)).toHaveLength(1);
+    expect(testApp.logs.filter((line) => line === MESSAGES.coinCheckFailed('Zcash'))).toHaveLength(
+      1,
+    );
     // The issuer asks for the block by its height, never for the payment.
     expect(urlOf(fetchMock.mock.calls[0]?.[0])).toBe(ZCASH_CHECK.blockUrl(3_534_900));
     fetchMock.mockImplementation(() => Promise.resolve(Response.json({ data: [] })));
     expect(await watch('zec')).toBe(0);
     fetchMock.mockImplementation(() => block([OTHER_TXID, TXID]));
     expect(await watch('zec')).toBe(300);
+    expect(await ticketOf(testApp.app, ticket.hash)).toMatchObject({ paid: 3 });
+  });
+
+  it('counts a payment of Monero only once the block of the second server holds it', async () => {
+    const { testApp, ledger, xmr, watch, fetchMock } = coinTest();
+    seedPrices(ledger, 'xmr', XMR_PER_USD, NOW);
+    const ticket = await newTicket();
+    const quote = await openQuote(testApp.app, ticket.hash, 'xmr', 3);
+    xmr.transfers = [paid(1, BigInt(quote.amount), 1)];
+    const block = (ids: string[]) =>
+      Promise.resolve(
+        Response.json({
+          data: {
+            '3534900': { block: { txs: ids.map((id) => ({ tx_hash: id, coinbase: false })) } },
+          },
+        }),
+      );
+    fetchMock.mockImplementation(() => block([OTHER_TXID]));
+    expect(await watch('xmr')).toBe(0);
+    expect(await watch('xmr')).toBe(0);
+    expect(testApp.logs.filter((line) => line === MESSAGES.coinCheckFailed('Monero'))).toHaveLength(
+      1,
+    );
+    // The issuer asks for the block by its height, never for the payment.
+    expect(urlOf(fetchMock.mock.calls[0]?.[0])).toBe(MONERO_CHECK.blockUrl(3_534_900));
+    // A height that the server does not know yet answers 404, and the payment waits.
+    fetchMock.mockImplementation(() =>
+      Promise.resolve(Response.json({ data: null }, { status: 404 })),
+    );
+    expect(await watch('xmr')).toBe(0);
+    fetchMock.mockImplementation(() => block([OTHER_TXID, TXID]));
+    expect(await watch('xmr')).toBe(300);
     expect(await ticketOf(testApp.app, ticket.hash)).toMatchObject({ paid: 3 });
   });
 
