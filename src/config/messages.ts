@@ -57,6 +57,10 @@ export const MESSAGES = {
   ticketCount: (vouchers: number): string =>
     `This ticket gives ${String(vouchers)} ${vouchers === 1 ? 'voucher' : 'vouchers'}, no more and no fewer.`,
   holderKeyMissing: 'No key signs holder vouchers this month.',
+  /** The free chats of a holder (31 Oct 2026). */
+  passKeyMissing: 'No key signs free chats this month.',
+  passBelowMinimum: 'This wallet holds too little THKR for free chats.',
+  passProofUnknown: 'This browser proved no wallet for free chats. Prove the wallet again.',
   /** A ticket of a top-up that no payment reached yet. */
   topUpTicketUnpaid: 'Nothing was paid on this ticket yet.',
   /** More blinded vouchers than the payments of a ticket left to fetch. */

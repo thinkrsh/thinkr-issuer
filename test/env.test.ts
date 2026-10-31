@@ -5,6 +5,7 @@ import { readEnv } from '../src/config/env.js';
 const LAPTOP = {
   VOUCHER_KEY_FILE: '../../secret/voucher-dev.pem',
   HOLDER_KEYS_DIR: '../../secret/holder-keys-dev',
+  PASS_KEYS_DIR: '../../secret/pass-keys-dev',
   DATABASE_FILE: '.data/ledger.db',
   CLAIM_FACTORY: '0xC1a1F0000000000000000000000000000000c1A1',
   CLAIM_OPERATOR_KEY_FILE: '../../secret/claim-operator-key.txt',
@@ -16,11 +17,13 @@ describe('readEnv', () => {
       clientAddressHeader: null,
       noteKeyFile: '../../secret/voucher-dev.pem',
       holderKeysDir: '../../secret/holder-keys-dev',
+      passKeysDir: '../../secret/pass-keys-dev',
       changeKeysDir: null,
       databaseFile: '.data/ledger.db',
       testnetPayers: [],
       chainRpcUrl: null,
       claimFactory: '0xc1a1f0000000000000000000000000000000c1a1',
+      claimFactoryRetired: null,
       claimOperatorKeyFile: '../../secret/claim-operator-key.txt',
       coinWallets: {},
     });
@@ -81,7 +84,7 @@ describe('readEnv', () => {
 
   it('fails loudly and names every missing variable', () => {
     expect(() => readEnv({})).toThrow(
-      /VOUCHER_KEY_FILE, HOLDER_KEYS_DIR, DATABASE_FILE, CLAIM_FACTORY, CLAIM_OPERATOR_KEY_FILE/,
+      /VOUCHER_KEY_FILE, HOLDER_KEYS_DIR, PASS_KEYS_DIR, DATABASE_FILE, CLAIM_FACTORY, CLAIM_OPERATOR_KEY_FILE/,
     );
   });
 

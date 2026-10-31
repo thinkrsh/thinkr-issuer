@@ -6,7 +6,9 @@
 // vouchers. THKR of a claim that did not go through, or that came later, goes back to the wallet.
 // Only the wallet can send from itself, so the transfer proves the wallet as a signature does, and
 // the vouchers stay blind as in every claim. A claim from before named the burn address and an exact
-// amount, and keeps that way until it ends.
+// amount, and keeps that way until it ends. Since 31 Oct 2026 a burn that went through also proves the
+// wallet to the secret of the claim, for the free chats of a holder (hold/pass.ts), and a claim that
+// wants no holder voucher does only that.
 import { HOLD } from '../config/hold.js';
 import { MESSAGES } from '../config/messages.js';
 import { PAYMENTS } from '../config/payments.js';
@@ -24,6 +26,8 @@ const UNIT = 10n ** BigInt(TOKEN_PAYMENT.token.decimals);
 export const CLAIM_BURN = BigInt(HOLD.transferClaim.burnThkr) * UNIT;
 const MIN_REFUND = BigInt(HOLD.transferClaim.minRefundThkr) * UNIT;
 const BURN_ADDRESS = TOKEN_TREASURY.burnAddress.toLowerCase();
+/** The holder vouchers that a claim wants when it only proves its wallet. */
+export const PROOF_ONLY = 0;
 
 /** A claim with a deposit address, as every claim since 27 Oct 2026 has. */
 type DepositClaim = TransferClaim & { readonly claimId: string; readonly deposit: string };
@@ -36,7 +40,10 @@ export function transferClaimState(
   claim: TransferClaim,
   indexedAt: number | null,
 ): HoldTransferClaimState {
-  if (claim.txHash !== null) return (claim.vouchers ?? 0) > 0 ? 'claimed' : 'empty';
+  if (claim.txHash !== null) {
+    if (claim.wanted === PROOF_ONLY) return claim.provedAt === null ? 'empty' : 'proved';
+    return (claim.vouchers ?? 0) > 0 ? 'claimed' : 'empty';
+  }
   return indexedAt !== null && indexedAt > claim.expiresAt ? 'expired' : 'waiting';
 }
 
@@ -86,7 +93,8 @@ function isDepositClaim(claim: TransferClaim): claim is DepositClaim {
 /**
  * A claim whose wallet sent at least its burn to the deposit in its time: the claim wallet settles
  * the deposit, then the ticket takes the holder vouchers. A wallet with none ready burns nothing,
- * and its THKR goes back with the refunds. True once the claim ended.
+ * and its THKR goes back with the refunds, unless the claim only proves the wallet. True once the
+ * claim ended.
  */
 async function settleDeposit(deps: SettleDeps, claim: DepositClaim): Promise<boolean> {
   const transfers = deps.store.transfersOf(claim.deposit);
@@ -94,11 +102,12 @@ async function settleDeposit(deps: SettleDeps, claim: DepositClaim): Promise<boo
   const first = proving[0];
   const proved = proving.reduce((sum, transfer) => sum + transfer.amount, 0n);
   if (first === undefined || proved < claim.amount) return false;
-  if (walletStatus(deps.store, claim.wallet).claimable === 0) {
+  const proofOnly = claim.wanted === PROOF_ONLY;
+  if (!proofOnly && walletStatus(deps.store, claim.wallet).claimable === 0) {
     deps.store.closeTransferClaim(claim.ticketHash, first.txHash);
     return true;
   }
-  const settled = await deps.claimDeposits.settle(claim.wallet, claim.claimId);
+  const settled = await deps.claimDeposits.settle(claim.wallet, claim.claimId, claim.deposit);
   // Settled before, such as by a run that stopped halfway: the burn shows in the transfers read.
   const burned = settled ?? sentTo(transfers, claim.deposit, BURN_ADDRESS);
   if (settled === null && burned === 0n) return false;
@@ -107,7 +116,9 @@ async function settleDeposit(deps: SettleDeps, claim: DepositClaim): Promise<boo
     // The wallet took its THKR back before the settle, so the claim burned less than its due.
     deps.store.closeTransferClaim(claim.ticketHash, first.txHash);
   } else {
-    fillTicket(deps, claim, first.txHash);
+    deps.store.markProved(claim.ticketHash, deps.now());
+    if (proofOnly) deps.store.closeTransferClaim(claim.ticketHash, first.txHash);
+    else fillTicket(deps, claim, first.txHash);
   }
   return true;
 }
@@ -140,7 +151,7 @@ async function refundDeposits(deps: SettleDeps): Promise<void> {
     if (mayStillSettle) continue;
     const transfers = deps.store.transfersOf(claim.deposit);
     if (balanceOf(transfers, claim.deposit) >= MIN_REFUND) {
-      await deps.claimDeposits.refund(claim.wallet, claim.claimId);
+      await deps.claimDeposits.refund(claim.wallet, claim.claimId, claim.deposit);
     }
     deps.store.markReleased(claim.ticketHash, lastInflowAt(transfers, claim.deposit));
   }

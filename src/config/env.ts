@@ -25,6 +25,11 @@ const envObject = z.object({
    */
   HOLDER_KEYS_DIR: z.string().trim().min(1),
   /**
+   * The folder of the keys that sign the passes of free chats (31 Oct 2026), one RSA private key
+   * (PEM) for each month, as HOLDER_KEYS_DIR holds: `npm run holder-keys` makes them too.
+   */
+  PASS_KEYS_DIR: z.string().trim().min(1),
+  /**
    * The folder of the keys of the notes of change, 10.pem and 1.pem (credit/change-keys.ts). `npm run
    * change-keys` makes them. Read only while COIN_TOP_UPS names a coin, which needs it.
    */
@@ -53,6 +58,15 @@ const envObject = z.object({
     .string()
     .trim()
     .regex(/^0x[0-9a-fA-F]{40}$/),
+  /**
+   * The factory before CLAIM_FACTORY, which still settles and refunds the deposits of its claims
+   * (31 Oct 2026: the factory of 27 Oct 2026 burns 1,000 THKR at most). Unset, there is none.
+   */
+  CLAIM_FACTORY_RETIRED: z
+    .string()
+    .trim()
+    .regex(/^0x[0-9a-fA-F]{40}$/)
+    .optional(),
   /**
    * The file of the private key of the claim wallet, the operator of that factory, as 0x hex: it
    * settles and refunds the deposits and pays their gas. On the server it never leaves the server.
@@ -86,6 +100,7 @@ export interface Env {
   readonly clientAddressHeader: string | null;
   readonly noteKeyFile: string;
   readonly holderKeysDir: string;
+  readonly passKeysDir: string;
   /** Null while no coin of top-ups needs it. */
   readonly changeKeysDir: string | null;
   readonly databaseFile: string;
@@ -95,6 +110,8 @@ export interface Env {
   readonly chainRpcUrl: string | null;
   /** In lower case. */
   readonly claimFactory: string;
+  /** In lower case; null when no factory came before it. */
+  readonly claimFactoryRetired: string | null;
   readonly claimOperatorKeyFile: string;
   /** The URL of the wallet of each coin that top-ups take; empty while they take none. */
   readonly coinWallets: Readonly<Partial<Record<CoinId, string>>>;
@@ -116,6 +133,7 @@ export function readEnv(source: EnvSource): Env {
     clientAddressHeader: result.data.CLIENT_ADDRESS_HEADER ?? null,
     noteKeyFile: result.data.VOUCHER_KEY_FILE,
     holderKeysDir: result.data.HOLDER_KEYS_DIR,
+    passKeysDir: result.data.PASS_KEYS_DIR,
     changeKeysDir:
       coinsOf(result.data.COIN_TOP_UPS).length > 0 ? (result.data.CHANGE_KEYS_DIR ?? null) : null,
     databaseFile: result.data.DATABASE_FILE,
@@ -125,6 +143,7 @@ export function readEnv(source: EnvSource): Env {
       .filter((payer) => payer !== ''),
     chainRpcUrl: result.data.CHAIN_RPC_URL ?? null,
     claimFactory: result.data.CLAIM_FACTORY.toLowerCase(),
+    claimFactoryRetired: result.data.CLAIM_FACTORY_RETIRED?.toLowerCase() ?? null,
     claimOperatorKeyFile: result.data.CLAIM_OPERATOR_KEY_FILE,
     coinWallets: coinWalletsOf(result.data),
   };

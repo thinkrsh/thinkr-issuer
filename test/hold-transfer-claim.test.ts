@@ -232,9 +232,9 @@ describe('settleTransferClaims', () => {
     const { app, holdStore, claimDeposits } = issuerWith(2);
     const ticket = newTicket();
     const claim = await opened(app, ticket);
-    transfer(holdStore, 600n * THKR, NOW + 60_000, { to: claim.to });
+    transfer(holdStore, (CLAIM_BURN * 6n) / 10n, NOW + 60_000, { to: claim.to });
     expect(await settle(holdStore, claimDeposits, NOW + 70_000)).toBe(0);
-    transfer(holdStore, 900n * THKR, NOW + 80_000, { to: claim.to });
+    transfer(holdStore, (CLAIM_BURN * 9n) / 10n, NOW + 80_000, { to: claim.to });
     expect(await settle(holdStore, claimDeposits, NOW + 90_000)).toBe(1);
     expect((await stateOf(app, ticket)).state).toBe('claimed');
   });
@@ -334,7 +334,7 @@ describe('the refunds of deposits', () => {
     const { app, holdStore, claimDeposits } = issuerWith(3);
     const ticket = newTicket();
     const claim = await opened(app, ticket);
-    transfer(holdStore, 500n * THKR, NOW + 60_000, { to: claim.to });
+    transfer(holdStore, 500n * THKR, NOW + 60_000, { from: STRANGER, to: claim.to });
     expect(await settle(holdStore, claimDeposits, NOW + 90_000)).toBe(0);
     expect(claimDeposits.refunds).toHaveLength(0);
     readUpTo(holdStore, AFTER_TIME);
@@ -371,7 +371,7 @@ describe('the refunds of deposits', () => {
   it('keeps the THKR of a claim that may still settle', async () => {
     const { app, holdStore, claimDeposits } = issuerWith(3);
     const claim = await opened(app, newTicket());
-    transfer(holdStore, 500n * THKR, NOW + 60_000, { to: claim.to });
+    transfer(holdStore, 500n * THKR, NOW + 60_000, { from: STRANGER, to: claim.to });
     await settle(holdStore, claimDeposits, NOW + 90_000);
     expect(claimDeposits.refunds).toHaveLength(0);
     expect(holdStore.depositsToRelease()).toHaveLength(1);

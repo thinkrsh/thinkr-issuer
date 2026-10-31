@@ -17,7 +17,7 @@ import { HOLD } from '../config/hold.js';
 import { MESSAGES } from '../config/messages.js';
 import { PAYMENTS } from '../config/payments.js';
 import { TOKEN_PAYMENT } from '../config/token.js';
-import type { ClaimDeposits } from '../hold/claim-deposits.js';
+import { factoryOfClaim, type ClaimDeposits } from '../hold/claim-deposits.js';
 import { IssuerError } from '../lib/errors.js';
 
 /** What the hold calls of apps/contracts/src/ClaimDepositFactory.sol. */
@@ -80,6 +80,8 @@ export interface ClaimDepositsConfig {
   readonly rpcUrl: string | null;
   /** The address of the factory, CLAIM_FACTORY. */
   readonly factory: string;
+  /** The factory of the claims from before it, CLAIM_FACTORY_RETIRED, or null when none is left. */
+  readonly retiredFactory: string | null;
   /** The private key of the claim wallet, the operator of the factory. */
   readonly operatorKey: Hex;
 }
@@ -109,14 +111,22 @@ export function claimDepositsOnChain(config: ClaimDepositsConfig): ClaimDeposits
     transport,
   });
   const factory = config.factory as Address;
+  const retired = config.retiredFactory as Address | null;
 
-  const depositOf = async (wallet: string, claimId: string): Promise<Address> =>
+  const depositOf = async (at: Address, wallet: string, claimId: string): Promise<Address> =>
     reader.readContract({
-      address: factory,
+      address: at,
       abi: FACTORY_ABI,
       functionName: 'depositAddress',
       args: [wallet as Address, claimId as Hex],
     });
+
+  const factoryOf = async (wallet: string, claimId: string, deposit: string): Promise<Address> =>
+    (await factoryOfClaim(
+      { current: factory, retired },
+      (at) => depositOf(at as Address, wallet, claimId),
+      deposit,
+    )) as Address;
 
   /** Sends a transaction of the claim wallet and waits until a block took it. */
   const confirmed = async (hash: Hex): Promise<TransactionReceipt> => {
@@ -131,25 +141,25 @@ export function claimDepositsOnChain(config: ClaimDepositsConfig): ClaimDeposits
   return {
     depositAddress: async (wallet, claimId) => {
       try {
-        return (await depositOf(wallet, claimId)).toLowerCase();
+        return (await depositOf(factory, wallet, claimId)).toLowerCase();
       } catch {
         // The route answers that the chain cannot be reached; the next try asks it again.
         throw new IssuerError('upstream_error', MESSAGES.chainUnreachable);
       }
     },
-    settle: (wallet, claimId) =>
+    settle: (wallet, claimId, deposit) =>
       claimWallet(async () => {
-        const deposit = await depositOf(wallet, claimId);
+        const at = await factoryOf(wallet, claimId, deposit);
         const done = await reader.readContract({
-          address: factory,
+          address: at,
           abi: FACTORY_ABI,
           functionName: 'settled',
-          args: [deposit],
+          args: [deposit as Address],
         });
         if (done) return null;
         const receipt = await confirmed(
           await writer.writeContract({
-            address: factory,
+            address: at,
             abi: FACTORY_ABI,
             functionName: 'settle',
             args: [wallet as Address, claimId as Hex],
@@ -163,11 +173,11 @@ export function claimDepositsOnChain(config: ClaimDepositsConfig): ClaimDeposits
         if (settled === undefined) throw new Error(MESSAGES.claimWalletNoEvent);
         return settled.args.burned;
       }),
-    refund: (wallet, claimId) =>
+    refund: (wallet, claimId, deposit) =>
       claimWallet(async () => {
         await confirmed(
           await writer.writeContract({
-            address: factory,
+            address: await factoryOf(wallet, claimId, deposit),
             abi: FACTORY_ABI,
             functionName: 'refund',
             args: [wallet as Address, claimId as Hex, TOKEN_PAYMENT.token.address as Address],

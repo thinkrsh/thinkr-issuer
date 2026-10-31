@@ -106,6 +106,8 @@ export interface TransferClaim {
   readonly deposit: string | null;
   /** When the claim wallet last settled or refunded the deposit, or null before it did. */
   readonly releasedAt: number | null;
+  /** When its burn went through, which proves its wallet to its secret (hold/pass.ts), or null. */
+  readonly provedAt: number | null;
   readonly createdAt: number;
   readonly expiresAt: number;
   /** The transfer that named it, or null while it waits. */
@@ -235,6 +237,17 @@ export interface HoldStore {
   depositsToRelease: () => TransferClaim[];
   /** Notes that the claim wallet settled or refunded the deposit of a claim at `at`. */
   markReleased: (ticketHash: string, at: number) => void;
+  /** Notes that the burn of a claim went through at `at`, so that its secret proves its wallet. */
+  markProved: (ticketHash: string, at: number) => void;
+  /** The deposit addresses of every claim of a wallet, in lower case. */
+  depositsOf: (wallet: string) => string[];
+  /** The passes of free chats that a wallet took in the day that starts at `day`. */
+  passesTaken: (wallet: string, day: number) => number;
+  /**
+   * Takes up to `count` passes of a day for a wallet, in one step, as long as it took no more than
+   * `perDay` in that day, and forgets every day before. Returns how many it took.
+   */
+  takePasses: (wallet: string, day: number, count: number, perDay: number) => number;
   /**
    * Fills the ticket of a waiting claim with the whole holder vouchers that it asked for, or with
    * every one that its wallet can claim, never more than the wallet can claim nor `maxVouchers`,

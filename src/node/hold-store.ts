@@ -124,6 +124,12 @@ const SCHEMA = `
     eth_usd_micros TEXT NOT NULL,
     pool_units TEXT NOT NULL
   ) STRICT;
+  CREATE TABLE IF NOT EXISTS hold_pass_days (
+    wallet TEXT NOT NULL,
+    day INTEGER NOT NULL,
+    passes INTEGER NOT NULL,
+    PRIMARY KEY (wallet, day)
+  ) STRICT;
   INSERT OR IGNORE INTO hold_cursor (id) VALUES (1);
   INSERT OR IGNORE INTO hold_fee_cursor (id) VALUES (1);
 `;
@@ -134,6 +140,7 @@ const SCHEMA = `
  * deposit addresses came the same day; a claim of the burn address has none. The version of the
  * rules of the count came that day too; a count from before took version 1. What a wallet lost to
  * expiry came on 28 Oct 2026, with version 3 of the count, which counts it again from the launch.
+ * The proof of a wallet for free chats came on 31 Oct 2026; a claim from before proves nothing.
  */
 const ADDED_COLUMNS: readonly AddedColumn[] = [
   { table: 'hold_wallets', column: 'expired_units', definition: "TEXT NOT NULL DEFAULT '0'" },
@@ -141,6 +148,7 @@ const ADDED_COLUMNS: readonly AddedColumn[] = [
   { table: 'hold_transfer_claims', column: 'claim_id', definition: 'TEXT' },
   { table: 'hold_transfer_claims', column: 'deposit', definition: 'TEXT' },
   { table: 'hold_transfer_claims', column: 'released_at', definition: 'INTEGER' },
+  { table: 'hold_transfer_claims', column: 'proved_at', definition: 'INTEGER' },
   { table: 'hold_count', column: 'version', definition: 'INTEGER NOT NULL DEFAULT 1' },
 ];
 
@@ -292,7 +300,7 @@ function holdStoreOf(db: DatabaseSync): HoldStore {
   );
   const transferClaimColumns =
     'ticket_hash, wallet, amount, created_at, expires_at, tx_hash, vouchers, wanted, ' +
-    'claim_id, deposit, released_at';
+    'claim_id, deposit, released_at, proved_at';
   const selectTransferClaim = db.prepare(
     `SELECT ${transferClaimColumns} FROM hold_transfer_claims WHERE ticket_hash = ?`,
   );
@@ -315,6 +323,20 @@ function holdStoreOf(db: DatabaseSync): HoldStore {
   const markReleased = db.prepare(
     'UPDATE hold_transfer_claims SET released_at = ? WHERE ticket_hash = ?',
   );
+  const markProved = db.prepare(
+    'UPDATE hold_transfer_claims SET proved_at = ? WHERE ticket_hash = ?',
+  );
+  const selectDepositsOf = db.prepare(
+    'SELECT deposit FROM hold_transfer_claims WHERE wallet = ? AND deposit IS NOT NULL',
+  );
+  const selectPassesTaken = db.prepare(
+    'SELECT passes FROM hold_pass_days WHERE wallet = ? AND day = ?',
+  );
+  const addPassesTaken = db.prepare(
+    'INSERT INTO hold_pass_days (wallet, day, passes) VALUES (?, ?, ?) ' +
+      'ON CONFLICT (wallet, day) DO UPDATE SET passes = passes + excluded.passes',
+  );
+  const forgetPassDays = db.prepare('DELETE FROM hold_pass_days WHERE day < ?');
   const closeClaim = db.prepare(
     'UPDATE hold_transfer_claims SET tx_hash = ?, vouchers = 0 ' +
       'WHERE ticket_hash = ? AND tx_hash IS NULL',
@@ -437,6 +459,7 @@ function holdStoreOf(db: DatabaseSync): HoldStore {
     claimId: optionalText(row.claim_id),
     deposit: optionalText(row.deposit),
     releasedAt: optionalInteger(row.released_at),
+    provedAt: optionalInteger(row.proved_at),
   });
 
   const transferClaim = (ticketHash: string): TransferClaim | null => {
@@ -645,6 +668,24 @@ function holdStoreOf(db: DatabaseSync): HoldStore {
     },
     markReleased(ticketHash, at) {
       markReleased.run(at, ticketHash);
+    },
+    markProved(ticketHash, at) {
+      markProved.run(at, ticketHash);
+    },
+    depositsOf(wallet) {
+      return selectDepositsOf.all(wallet).map((row) => text(row.deposit));
+    },
+    passesTaken(wallet, day) {
+      return optionalInteger(selectPassesTaken.get(wallet, day)?.passes) ?? 0;
+    },
+    takePasses(wallet, day, count, perDay) {
+      return transaction(() => {
+        forgetPassDays.run(day);
+        const taken = optionalInteger(selectPassesTaken.get(wallet, day)?.passes) ?? 0;
+        const granted = Math.min(count, Math.max(0, perDay - taken));
+        if (granted > 0) addPassesTaken.run(wallet, day, granted);
+        return granted;
+      });
     },
     settleTransferClaim(input): TransferClaim | null {
       return transaction((): TransferClaim | null => {

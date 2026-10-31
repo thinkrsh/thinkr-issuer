@@ -10,6 +10,7 @@ import {
   UNIT_HOURS_PER_VOUCHER,
   vouchersOf,
 } from './accrual.js';
+import { passStandingOf } from './pass.js';
 import type { HoldStore, HoldWallet } from './store.js';
 import { isExcluded } from './sync.js';
 
@@ -80,6 +81,7 @@ export function walletStatus(store: HoldStore, address: string): HoldWalletRespo
     pausesAt: pausesAt(clock),
     countedUntil: hour,
     voucherUsd: HOLD.voucherUsd,
+    pass: { standing: passStandingOf(store, address), minimumThkr: HOLD.pass.minimumThkr },
   };
 }
 

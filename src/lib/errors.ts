@@ -18,6 +18,7 @@ export const ERROR_STATUS = {
   ticket_unknown: 404,
   ticket_used: 409,
   ticket_expired: 410,
+  pass_below_minimum: 409,
 } as const satisfies Record<ErrorCode, ContentfulStatusCode>;
 
 export class IssuerError extends Error {

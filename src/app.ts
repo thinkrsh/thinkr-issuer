@@ -40,6 +40,8 @@ export interface AppDeps {
   readonly holdStore: HoldStore;
   /** Sign the holder vouchers, one key for each month (decision 189). */
   readonly holderKeys: HolderKeys;
+  /** Sign the passes of the free chats of a holder, one key for each month (31 Oct 2026). */
+  readonly passKeys: HolderKeys;
   /** Sign the notes of change of a top-up in a privacy coin; none while no coin is open. */
   readonly changeKeys: ChangeKeys;
   /** The factory of the deposit addresses of claims by transfer, and its claim wallet. */

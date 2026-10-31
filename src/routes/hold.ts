@@ -8,6 +8,9 @@
 // For the chat app at chat.thinkr.sh, which knows the secret of the ticket and no wallet:
 // GET /api/issuer/hold/tickets/<hash> gives what the ticket holds and the key of its month, and
 // POST /api/issuer/hold/tickets/redeem answers its blinded vouchers with blind signatures.
+// For the free chats of a holder (31 Oct 2026): POST /api/issuer/hold/pass/proofs opens a claim by
+// transfer that only proves its wallet to the secret of the chat app, POST /api/issuer/hold/pass/status
+// says where that wallet stands, and POST /api/issuer/hold/pass/sign answers blinded passes.
 // GET /api/issuer/hold/totals gives the hold as a whole, with no wallet (decision 191), and
 // GET /api/issuer/hold/stats gives it by day with the wallets that earned the most, for any page.
 // The issuer never sees a voucher without its blind, so a claim does not link to a chat.
@@ -18,10 +21,15 @@ import { HOLD } from '../config/hold.js';
 import { MESSAGES } from '../config/messages.js';
 import {
   holdClaimRequestSchema,
+  holdPassProofRequestSchema,
+  holdPassSignRequestSchema,
+  holdPassStatusRequestSchema,
   holdQuoteRequestSchema,
   holdRedeemRequestSchema,
   holdTransferClaimRequestSchema,
   type HoldClaimResponse,
+  type HoldPassSignResponse,
+  type HoldPassStatusResponse,
   type HoldQuoteResponse,
   type HoldRedeemResponse,
   type HoldStatsResponse,
@@ -33,11 +41,12 @@ import {
 import { holderKeyAt, type HolderKeys } from '../credit/holder-keys.js';
 import { assertSignedBy, requestHash } from '../credit/payment.js';
 import type { NoteKey } from '../credit/note-key.js';
+import { passDay, passStandingOf } from '../hold/pass.js';
 import { holdStats, holdTotals } from '../hold/stats.js';
 import { walletStatus } from '../hold/status.js';
-import type { HoldStore, HoldTicket } from '../hold/store.js';
+import type { HoldStore, HoldTicket, TransferClaim } from '../hold/store.js';
 import { newClaimId, type ClaimDeposits } from '../hold/claim-deposits.js';
-import { CLAIM_BURN, transferClaimResponse } from '../hold/transfer-claims.js';
+import { CLAIM_BURN, PROOF_ONLY, transferClaimResponse } from '../hold/transfer-claims.js';
 import { parseBody, readJson } from '../lib/body.js';
 import { fromBase64Url, sha256, toBase64Url, toHex } from '../lib/bytes.js';
 import { IssuerError } from '../lib/errors.js';
@@ -49,6 +58,8 @@ export interface HoldRouteDeps {
   readonly limiter: RateLimiter;
   readonly holdStore: HoldStore;
   readonly holderKeys: HolderKeys;
+  /** Sign the passes of the free chats of a holder. */
+  readonly passKeys: HolderKeys;
   /** Names the deposit address of each new claim by transfer. */
   readonly claimDeposits: ClaimDeposits;
 }
@@ -108,42 +119,64 @@ export function createHoldRoute(deps: HoldRouteDeps): Hono {
       takeRequest(deps, c);
       const request = parseBody(holdTransferClaimRequestSchema, await readJson(c));
       const wallet = request.wallet.toLowerCase();
-      const store = deps.holdStore;
-      const existing = store.transferClaim(request.ticket);
-      // The same ticket again answers with its claim, with no call to the chain.
-      if (existing !== null) {
-        if (existing.wallet !== wallet) throw new IssuerError('ticket_used', MESSAGES.ticketTaken);
-        return c.json<HoldTransferClaimResponse>(
-          transferClaimResponse(existing, store.cursor().indexedAt),
-        );
-      }
-      const claimable = walletStatus(store, wallet).claimable;
-      if (claimable < (request.vouchers ?? 1)) {
-        throw new IssuerError('claim_too_large', MESSAGES.claimTooLarge(claimable));
-      }
-      const claimId = newClaimId(HOLD.transferClaim.claimIdBytes);
-      const deposit = await deps.claimDeposits.depositAddress(wallet, claimId);
-      const at = deps.now();
-      const result = store.openTransferClaim({
+      const claim = await openDepositClaim(
+        deps,
         wallet,
-        ticketHash: request.ticket,
-        at,
-        expiresAt: at + HOLD.transferClaim.ttlMs,
-        maxOpen: HOLD.transferClaim.maxOpenPerWallet,
-        wanted: request.vouchers ?? null,
-        amount: CLAIM_BURN,
-        claimId,
-        deposit,
-      });
-      if (result.outcome === 'ticket_taken') {
-        throw new IssuerError('ticket_used', MESSAGES.ticketTaken);
-      }
-      if (result.outcome === 'too_many_open') {
-        throw new IssuerError('claims_open', MESSAGES.claimsOpen);
-      }
-      return c.json<HoldTransferClaimResponse>(
-        transferClaimResponse(result.claim, store.cursor().indexedAt),
+        request.ticket,
+        request.vouchers ?? null,
+        () => {
+          const claimable = walletStatus(deps.holdStore, wallet).claimable;
+          if (claimable < (request.vouchers ?? 1)) {
+            throw new IssuerError('claim_too_large', MESSAGES.claimTooLarge(claimable));
+          }
+        },
       );
+      return c.json<HoldTransferClaimResponse>(claim);
+    })
+    .post('/pass/proofs', async (c) => {
+      takeRequest(deps, c);
+      const request = parseBody(holdPassProofRequestSchema, await readJson(c));
+      const wallet = request.wallet.toLowerCase();
+      const claim = await openDepositClaim(deps, wallet, request.ticket, PROOF_ONLY, () => {
+        const standing = passStandingOf(deps.holdStore, wallet);
+        if (standing !== 'ready' && standing !== 'counting') {
+          throw new IssuerError('pass_below_minimum', MESSAGES.passBelowMinimum);
+        }
+      });
+      return c.json<HoldTransferClaimResponse>(claim);
+    })
+    .post('/pass/status', async (c) => {
+      takeRequest(deps, c);
+      const request = parseBody(holdPassStatusRequestSchema, await readJson(c));
+      const { wallet } = await provedClaim(deps, request.secret);
+      const at = deps.now();
+      const key = passKeyAt(deps, at);
+      return c.json<HoldPassStatusResponse>({
+        standing: passStandingOf(deps.holdStore, wallet),
+        left: HOLD.pass.perDay - deps.holdStore.passesTaken(wallet, passDay(at)),
+        perDay: HOLD.pass.perDay,
+        keyId: key.keyId,
+        publicKey: toBase64Url(key.publicKey),
+      });
+    })
+    .post('/pass/sign', async (c) => {
+      takeRequest(deps, c);
+      const request = parseBody(holdPassSignRequestSchema, await readJson(c));
+      const { wallet } = await provedClaim(deps, request.secret);
+      if (passStandingOf(deps.holdStore, wallet) !== 'ready') {
+        throw new IssuerError('pass_below_minimum', MESSAGES.passBelowMinimum);
+      }
+      const at = deps.now();
+      const key = passKeyAt(deps, at);
+      if (request.keyId !== key.keyId) throw new IssuerError('key_changed', MESSAGES.keyChanged);
+      // Signs first, so that a blinded pass that cannot be signed costs the day nothing.
+      const signed = request.blinded.map((one) => toBase64Url(blindSign(key, fromBase64Url(one))));
+      const day = passDay(at);
+      const taken = deps.holdStore.takePasses(wallet, day, signed.length, HOLD.pass.perDay);
+      return c.json<HoldPassSignResponse>({
+        blindSignatures: signed.slice(0, taken),
+        left: HOLD.pass.perDay - deps.holdStore.passesTaken(wallet, day),
+      });
     })
     .get('/transfer-claims/:hash', (c) => {
       takeRequest(deps, c);
@@ -218,6 +251,62 @@ function takeRequest(deps: HoldRouteDeps, c: Context): void {
   if (!deps.limiter.take(deps.clientKey(c), deps.now())) {
     throw new IssuerError('rate_limited', MESSAGES.rateLimited);
   }
+}
+
+/**
+ * Opens a claim by transfer into a ticket that the chat app made. `assertOpens` says whether a new
+ * one may open. The same ticket again answers with its claim, with no call to the chain.
+ */
+async function openDepositClaim(
+  deps: HoldRouteDeps,
+  wallet: string,
+  ticket: string,
+  wanted: number | null,
+  assertOpens: () => void,
+): Promise<HoldTransferClaimResponse> {
+  const store = deps.holdStore;
+  const existing = store.transferClaim(ticket);
+  if (existing !== null) {
+    if (existing.wallet !== wallet) throw new IssuerError('ticket_used', MESSAGES.ticketTaken);
+    return transferClaimResponse(existing, store.cursor().indexedAt);
+  }
+  assertOpens();
+  const claimId = newClaimId(HOLD.transferClaim.claimIdBytes);
+  const deposit = await deps.claimDeposits.depositAddress(wallet, claimId);
+  const at = deps.now();
+  const result = store.openTransferClaim({
+    wallet,
+    ticketHash: ticket,
+    at,
+    expiresAt: at + HOLD.transferClaim.ttlMs,
+    maxOpen: HOLD.transferClaim.maxOpenPerWallet,
+    wanted,
+    amount: CLAIM_BURN,
+    claimId,
+    deposit,
+  });
+  if (result.outcome === 'ticket_taken') {
+    throw new IssuerError('ticket_used', MESSAGES.ticketTaken);
+  }
+  if (result.outcome === 'too_many_open') {
+    throw new IssuerError('claims_open', MESSAGES.claimsOpen);
+  }
+  return transferClaimResponse(result.claim, store.cursor().indexedAt);
+}
+
+/** The claim whose burn proved its wallet to this secret. */
+async function provedClaim(deps: HoldRouteDeps, secret: string): Promise<TransferClaim> {
+  const claim = deps.holdStore.transferClaim(toHex(await sha256(fromBase64Url(secret))));
+  const proved = claim?.provedAt === null ? null : claim;
+  if (proved === null) throw new IssuerError('ticket_unknown', MESSAGES.passProofUnknown);
+  return proved;
+}
+
+/** The key that signs the passes of the month of `at`. */
+function passKeyAt(deps: HoldRouteDeps, at: number): NoteKey {
+  const found = holderKeyAt(deps.passKeys, at);
+  if (found === null) throw new IssuerError('internal_error', MESSAGES.passKeyMissing);
+  return found.key;
 }
 
 /** The ticket, unless it ended unfetched. */

@@ -22,6 +22,7 @@ export const ERROR_CODES = [
   'ticket_unknown',
   'ticket_used',
   'ticket_expired',
+  'pass_below_minimum',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -361,6 +362,12 @@ export interface TopUpPaymentsResponse {
 export type HoldReason = 'earning' | 'below_minimum' | 'paused' | 'excluded' | 'contract';
 
 /**
+ * Where a wallet stands for the free chats of a holder (31 Oct 2026): it takes passes now, it holds
+ * enough but not for all of the last 24 hours yet, or it does not take them, and why.
+ */
+export type HoldPassStanding = 'ready' | 'counting' | 'below_minimum' | 'excluded' | 'contract';
+
+/**
  * GET /api/issuer/hold/wallets/<address>: the hold of one wallet, as the count of the issuer sees
  * it. Public, like the chain it comes from.
  */
@@ -392,6 +399,8 @@ export interface HoldWalletResponse {
   countedUntil: number | null;
   /** What one holder voucher is worth in dollars of credit. */
   voucherUsd: number;
+  /** The free chats of a holder: where the wallet stands, and the least THKR that takes them. */
+  pass: { standing: HoldPassStanding; minimumThkr: number };
 }
 
 /**
@@ -447,9 +456,10 @@ export type HoldTransferClaimRequest = z.infer<typeof holdTransferClaimRequestSc
 
 /**
  * Where a claim by transfer stands: it waits for the transfer, its ticket holds the holder
- * vouchers, the transfer came when the wallet had none to claim, or its time ended.
+ * vouchers, the transfer proved the wallet for free chats, the transfer came when the wallet had
+ * none to claim, or its time ended.
  */
-export type HoldTransferClaimState = 'waiting' | 'claimed' | 'empty' | 'expired';
+export type HoldTransferClaimState = 'waiting' | 'claimed' | 'proved' | 'empty' | 'expired';
 
 /** A claim by transfer, and GET /api/issuer/hold/transfer-claims/<ticket hash>. */
 export interface HoldTransferClaimResponse {
@@ -467,6 +477,54 @@ export interface HoldTransferClaimResponse {
   expiresAt: number;
   /** The holder vouchers that the transfer claimed into the ticket, or null before it came. */
   vouchers: number | null;
+}
+
+/**
+ * POST /api/issuer/hold/pass/proofs: a claim by transfer that takes no holder voucher (31 Oct 2026),
+ * and whose burn proves the wallet for the free chats of a holder. It answers as a claim by transfer
+ * does, and GET /api/issuer/hold/transfer-claims/<ticket hash> follows it.
+ */
+export const holdPassProofRequestSchema = z.strictObject({
+  wallet: walletSchema,
+  /** The SHA-256 of the secret of the proof, in hex. Only the chat app holds the secret. */
+  ticket: ticketHashSchema,
+});
+
+export type HoldPassProofRequest = z.infer<typeof holdPassProofRequestSchema>;
+
+/** POST /api/issuer/hold/pass/status: where the wallet of a proof stands, and its key of today. */
+export const holdPassStatusRequestSchema = z.strictObject({
+  /** The secret of a claim by transfer whose burn went through. */
+  secret: base64UrlOf(HOLD.ticketBytes),
+});
+
+export type HoldPassStatusRequest = z.infer<typeof holdPassStatusRequestSchema>;
+
+export interface HoldPassStatusResponse {
+  standing: HoldPassStanding;
+  /** The passes that the wallet can still take today. */
+  left: number;
+  perDay: number;
+  /** The key that signs the passes of this month, which the chat app blinds them with. */
+  keyId: string;
+  /** The RSA public key, SPKI DER in base64url. */
+  publicKey: string;
+}
+
+/** POST /api/issuer/hold/pass/sign: blinded passes, which the issuer signs while the day has some. */
+export const holdPassSignRequestSchema = z.strictObject({
+  secret: base64UrlOf(HOLD.ticketBytes),
+  keyId: keyIdSchema,
+  blinded: z.array(base64UrlOf(MODULUS_BYTES)).min(1).max(HOLD.pass.maxPerRequest),
+});
+
+export type HoldPassSignRequest = z.infer<typeof holdPassSignRequestSchema>;
+
+export interface HoldPassSignResponse {
+  /** The blind signatures of the first blinded passes, as many as the day still had. */
+  blindSignatures: string[];
+  /** The passes that the wallet can still take today. */
+  left: number;
 }
 
 /** GET /api/issuer/hold/tickets/<hash>: what a ticket gives, and the key to blind its vouchers. */

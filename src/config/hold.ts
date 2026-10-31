@@ -179,6 +179,21 @@ export const HOLD = {
     maxEarners: 1_000,
   },
   /**
+   * Free chats in the private lane for a holder (the owner, 31 Oct 2026: "misal kita gratisin
+   * private ai buat holder gimana ?", then "setuju" to 1M THKR). A wallet proves itself once with a
+   * claim by transfer, and its browser then takes blind passes here, each good for one chat at the
+   * proxy, so that a chat never names a wallet (hold/pass.ts). The site tells the same rules from
+   * `freeChats` of apps/site-v2/src/config/token.ts.
+   */
+  pass: {
+    /** The least THKR of the count that takes passes: about $24 on 31 Oct 2026. */
+    minimumThkr: 1_000_000,
+    /** The passes that one wallet takes in a day of UTC, each one chat. */
+    perDay: 100,
+    /** The most passes of one request, so that an answer lost on its way costs little of a day. */
+    maxPerRequest: 10,
+  },
+  /**
    * The claim by transfer, for a wallet in an app that signs no message (25 Oct 2026): the wallet
    * sends an amount of THKR that names its claim to the burn address, and the count takes the
    * claim once it reads that transfer on the chain.
@@ -187,10 +202,11 @@ export const HOLD = {
     /**
      * What one claim burns, and so the least THKR that its wallet sends to the deposit address of
      * the claim (27 Oct 2026: "kalo salah jumlah bisa kita refund"); the rest goes back to the
-     * wallet. Must match `burnAmount` of the factory of apps/contracts. About $0.025: 1M THKR
-     * was about $24.78 on 24 Oct 2026.
+     * wallet. Must match `burnAmount` of the factory of apps/contracts, and `claimBurnThkr` of
+     * apps/site-v2. 1,000 until the owner, 31 Oct 2026: "jangan 1000, seratus THKR aja", then
+     * "kurangan juga aja biar sama semua 100". About $0.0024: 1M THKR was about $24.07 that day.
      */
-    burnThkr: 1_000,
+    burnThkr: 100,
     /**
      * THKR at a deposit under this amount waits for its wallet to send it back itself: below it, a
      * refund costs Thinkr more gas than it returns, and dust could drain the claim wallet.

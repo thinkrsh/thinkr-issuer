@@ -246,6 +246,7 @@ describe('GET /api/issuer/hold/wallets/<address>', () => {
       pausesAt: FIRST_EARNING + 30 * 24 * HOUR,
       countedUntil: FIRST_HOUR + 24 * HOUR,
       voucherUsd: HOLD.voucherUsd,
+      pass: { standing: 'ready', minimumThkr: HOLD.pass.minimumThkr },
     });
   });
 

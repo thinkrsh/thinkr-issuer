@@ -10,10 +10,26 @@ export interface ClaimDeposits {
   /**
    * Settles the deposit of a claim that went through. Resolves with the THKR that it burned, or
    * with null when the deposit settled before, whose burn the count reads from the chain instead.
+   * `deposit` is the address that the claim named, which says the factory of a claim from before.
    */
-  settle: (wallet: string, claimId: string) => Promise<bigint | null>;
+  settle: (wallet: string, claimId: string, deposit: string) => Promise<bigint | null>;
   /** Sends all the THKR of the deposit of a claim back to its wallet. */
-  refund: (wallet: string, claimId: string) => Promise<void>;
+  refund: (wallet: string, claimId: string, deposit: string) => Promise<void>;
+}
+
+/**
+ * The factory of a claim: this one when it names the deposit of the claim, or else the one before
+ * it, which still settles and refunds the deposits of its claims. Addresses are in lower case.
+ */
+export async function factoryOfClaim(
+  factories: { readonly current: string; readonly retired: string | null },
+  namedBy: (factory: string) => Promise<string>,
+  deposit: string,
+): Promise<string> {
+  if (factories.retired === null) return factories.current;
+  return (await namedBy(factories.current)).toLowerCase() === deposit
+    ? factories.current
+    : factories.retired;
 }
 
 /** A random id of a claim at the factory, `bytes` long, as 0x hex. */

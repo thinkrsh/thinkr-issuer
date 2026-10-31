@@ -48,6 +48,12 @@ export const TEST_HOLDER_KEYS: HolderKeys = new Map([
   ['2026-11', testKey()],
 ]);
 
+/** The keys of the passes of free chats of the tests: October and November of 2026. */
+export const TEST_PASS_KEYS: HolderKeys = new Map([
+  ['2026-10', testKey()],
+  ['2026-11', testKey()],
+]);
+
 export type FetchMock = ReturnType<typeof vi.fn<typeof fetch>>;
 
 /**
@@ -136,11 +142,13 @@ export function createTestApp(
       clientAddressHeader: null,
       noteKeyFile: 'unused-in-tests.pem',
       holderKeysDir: 'unused-in-tests',
+      passKeysDir: 'unused-in-tests',
       changeKeysDir: null,
       databaseFile: ':memory:',
       testnetPayers: [],
       chainRpcUrl: options.chainRpcUrl ?? null,
       claimFactory: '0x00000000000000000000000000000000000c1a1f',
+      claimFactoryRetired: null,
       claimOperatorKeyFile: 'unused-in-tests.txt',
       coinWallets: {},
     },
@@ -149,6 +157,7 @@ export function createTestApp(
     noteKey: TEST_NOTE_KEY,
     holdStore,
     holderKeys: TEST_HOLDER_KEYS,
+    passKeys: TEST_PASS_KEYS,
     changeKeys: TEST_CHANGE_KEYS,
     claimDeposits,
     fetch: fetchMock,

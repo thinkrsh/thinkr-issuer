@@ -30,10 +30,12 @@ const noteKey = noteKeyFromPem(readFileSync(env.noteKeyFile, 'utf8'));
 const ledger = openLedger(env.databaseFile);
 const holdStore = openHoldStore(env.databaseFile);
 const holderKeys = holderKeysFromDir(env.holderKeysDir);
+const passKeys = holderKeysFromDir(env.passKeysDir);
 const changeKeys = env.changeKeysDir === null ? new Map() : changeKeysFromDir(env.changeKeysDir);
 const claimDeposits = claimDepositsOnChain({
   rpcUrl: env.chainRpcUrl,
   factory: env.claimFactory,
+  retiredFactory: env.claimFactoryRetired,
   operatorKey: operatorKeyFrom(readFileSync(env.claimOperatorKeyFile, 'utf8')),
 });
 /** The coins that top-ups take, each with its view-only wallet; none while COIN_TOP_UPS is unset. */
@@ -75,6 +77,7 @@ const app = createApp({
   noteKey,
   holdStore,
   holderKeys,
+  passKeys,
   changeKeys,
   claimDeposits,
   coinWallets,
