@@ -86,6 +86,12 @@ export const HOLD = {
         until: Date.UTC(2026, 9, 31, 10),
         txHash: '0x9fdd3b7c204a9798b774e731e998912153ed9a69c17363f619b358f5a18692e5',
       },
+      // The fourth (1 Nov 2026, the owner's tx): what expired from 31 Oct 10:00 to 1 Nov 15:00 UTC,
+      // 136.65 holder vouchers or $54.66; 2,011,676.87 THKR from the wallet of the holder pool.
+      {
+        until: Date.UTC(2026, 10, 1, 15),
+        txHash: '0x6a5a5e73b305487a3a618ef0c9d122492698414f77e3983caa91a308755e1e63',
+      },
     ] as readonly ExpiryBurn[],
   },
   /**
